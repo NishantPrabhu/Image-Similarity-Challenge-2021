@@ -5,6 +5,14 @@ import torch.nn.functional as F
 from collections import OrderedDict
 
 
+def _encode_tensor_size(tensor):
+    string = "-".join([str(s) for s in tensor.shape[1:]])
+    return string
+
+def _swish(inp1, inp2):
+    return inp1 * torch.sigmoid(inp2)
+
+
 class DenseLayer(nn.Module):
     
     def __init__(self, input_features, growth_rate, bn_size, drop_rate):
@@ -62,7 +70,7 @@ class Transition(nn.Sequential):
     
 class DownsampleDenseNet(nn.Module):
     
-    def __init__(self, growth_rate=32, block_config=(6, 12, 24, 16), num_init_features=64, bn_size=4, drop_rate=0.0):
+    def __init__(self, growth_rate=32, block_config=(4, 4, 4, 4), num_init_features=64, bn_size=4, drop_rate=0.0):
         super(DownsampleDenseNet, self).__init__()
         self.features = nn.Sequential(
             OrderedDict([
@@ -101,19 +109,34 @@ class DownsampleDenseNet(nn.Module):
             elif isinstance(m, nn.Linear):
                 nn.init.constant_(m.bias, 0)   
                 
-    def forward(self, x, flatten=False):
-        features = self.features(x)
-        for i, block in enumerate(self.blocks):
-            features = block(features)
-            if i % 2 == 0:
-                print(f"Dense block {i//2}:", features.size())
-            else:
-                print(f"Transition block {i//2}:", features.size())
-        out = F.relu(features)
-        out = F.adaptive_avg_pool2d(out, output_size=(1, 1))
-        if flatten:
+    def forward(self, x, fusion_maps=None):
+        outputs = {}
+        if fusion_maps is None:
+            features = self.features(x)
+            outputs[_encode_tensor_size(features)] = features
+            
+            for i, block in enumerate(self.blocks):
+                features = block(features)
+                outputs[_encode_tensor_size(features)] = features
+            out = F.relu(features)
+            out = F.adaptive_avg_pool2d(out, output_size=(1, 1))
             out = torch.flatten(out, 1)
-        return out 
+            outputs[_encode_tensor_size(out)] = out
+        else:
+            features = self.features(x)
+            features = _swish(features, fusion_maps[_encode_tensor_size(features)])
+            outputs[_encode_tensor_size(features)] = features 
+            
+            for i, block in enumerate(self.blocks):
+                features = block(features)
+                if i != len(self.blocks)-1:                                                         # No swish for global pooling map
+                    features = _swish(features, fusion_maps[_encode_tensor_size(features)])
+                outputs[_encode_tensor_size(features)] = features 
+            out = F.relu(features)
+            out = outputs[_encode_tensor_size(out)] = out
+            out = F.adaptive_avg_pool2d(out, output_size=(1, 1))
+            out = torch.flatten(out, 1)
+        return outputs, out
     
     
 # =========================================================================
@@ -169,7 +192,7 @@ class UpsampleDenseBlock(nn.Module):
     
 class UpsampleDenseNet(nn.Module):
     
-    def __init__(self, shrink_rate=32, block_config=(16, 24, 12, 6), num_init_features=1024, bn_size=4, drop_rate=0.0):
+    def __init__(self, shrink_rate=32, block_config=(4, 4, 4, 4), num_init_features=248, bn_size=4, drop_rate=0.0):
         super(UpsampleDenseNet, self).__init__()
         num_features = num_init_features
         blocks = []
@@ -203,33 +226,86 @@ class UpsampleDenseNet(nn.Module):
             elif isinstance(m, nn.Linear):
                 nn.init.constant_(m.bias, 0)
                 
-    def forward(self, x):
-        for i, block in enumerate(self.blocks):
-            x = block(x)
-            if i % 2 == 0:
-                print(f"Dense block {i // 2}:", x.size())
-            else:
-                print(f"Transition block {i // 2}:", x.size())
-        out = F.relu(x)
-        out = F.interpolate(out, scale_factor=(2, 2), mode="bilinear", align_corners=False)
-        out = self.conv5(out)
-        out = F.interpolate(out, scale_factor=(2, 2), mode="bilinear", align_corners=False)
-        out = self.conv6(out)
-        return out
+    def forward(self, x, fusion_maps=None):
+        outputs = {}
+        if fusion_maps is None:
+            for i, block in enumerate(self.blocks):
+                x = block(x)
+                outputs[_encode_tensor_size(x)] = x
+            out = F.relu(x)
+            out = F.interpolate(out, scale_factor=(2, 2), mode="bilinear", align_corners=False)
+            out = self.conv5(out)
+            outputs[_encode_tensor_size(out)] = out
+            out = F.interpolate(out, scale_factor=(2, 2), mode="bilinear", align_corners=False)
+            out = self.conv6(out)
+            outputs[_encode_tensor_size(out)] = out
+        else:
+            for i, block in enumerate(self.blocks):
+                x = _swish(x, fusion_maps[_encode_tensor_size(x)])
+                x = block(x)
+                outputs[_encode_tensor_size(x)] = x
+            out = F.relu(x)
+            out = F.interpolate(out, scale_factor=(2, 2), mode="bilinear", align_corners=False)
+            out = self.conv5(out)
+            out = F.interpolate(out, scale_factor=(2, 2), mode="bilinear", align_corners=False)
+            out = self.conv6(out)
+        return outputs, out
+    
+# ================================================================================
+# Both the networks combined into the main model
+# ================================================================================
+
+class SimilarityDensenetModel(nn.Module):
+    """ Needs a better name perhaps but anyway """
+    
+    def __init__(
+        self, 
+        downsample_block_cfg = (4, 4, 4, 4), 
+        upsample_block_cfg = (4, 4, 4, 4), 
+        global_feature_size = 248,
+        global_expansion_scale = 4,
+        downsample_growth_rate = 32,
+        upsample_shrink_rate = 32,
+        bottleneck_size = 4,
+        dropout_prob = 0.0        
+    ):
+        super(SimilarityDensenetModel, self).__init__()
+        self.downsample1 = DownsampleDenseNet(
+            growth_rate = downsample_growth_rate,
+            block_config = downsample_block_cfg,
+            num_init_features = 64,
+            bn_size = bottleneck_size,
+            drop_rate = dropout_prob
+        )
+        self.upsample1 = UpsampleDenseNet(
+            shrink_rate = upsample_shrink_rate,
+            block_config = upsample_block_cfg,
+            num_init_features = global_feature_size,
+            bn_size = bottleneck_size,
+            drop_rate = dropout_prob
+        )
+        self.downsample2 = DownsampleDenseNet(
+            growth_rate = downsample_growth_rate,
+            block_config = downsample_block_cfg,
+            num_init_features = 64,
+            bn_size = bottleneck_size,
+            drop_rate = dropout_prob
+        )
+        self.global_scale = global_expansion_scale
+        self.global_fc = nn.Linear(global_feature_size, global_feature_size * self.global_scale**2, bias=False)
+        
+    def forward(self, inputs):
+        ds_outs, global_fs = self.downsample1(inputs, fusion_maps=None)
+        global_fs = self.global_fc(global_fs).view(inputs.size(0), -1, self.global_scale, self.global_scale)
+        global_fs = F.interpolate(global_fs, scale_factor=(2, 2), mode="bilinear", align_corners=False)
+        us_outs, us_inputs = self.upsample1(global_fs, fusion_maps=ds_outs)
+        _, final_fvec = self.downsample2(us_inputs, fusion_maps=us_outs)
+        return final_fvec
     
     
 if __name__ == "__main__":
     
-    print("\nDownsampling network:")
-    print("--------------------------------------------------")
-    model = DownsampleDenseNet().eval()
-    x = torch.randn(1, 3, 224, 224)
-    out = model(x, flatten=True)
-    print("Output size:", out.size())
-    
-    print("\nUpsampling network")
-    print("---------------------------------------------------")
-    model = UpsampleDenseNet(shrink_rate=32).eval()
-    x = torch.randn(1, 1024, 7, 7)
-    out = model(x)
-    print("Output size:", out.size())
+    net = SimilarityDensenetModel()
+    x = torch.randn(1, 3, 256, 256)
+    out = net(x)
+    print(out.size())
