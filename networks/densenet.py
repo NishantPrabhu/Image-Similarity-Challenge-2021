@@ -251,6 +251,7 @@ class UpsampleDenseNet(nn.Module):
             out = self.conv6(out)
         return outputs, out
     
+
 # ================================================================================
 # Both the networks combined into the main model
 # ================================================================================
