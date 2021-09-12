@@ -1,17 +1,19 @@
 
 import os 
-import wandb
 import torch 
+import wandb
+import pickle
+import numpy as np
 import torch.nn as nn 
 from networks import densenet
-from utils import common, train_utils
+from utils import common, train_utils, eval_utils, data_utils
 
 
 class Trainer:
     
     def __init__(self, args):
         self.config, self.output_dir, self.logger, self.device = common.initialize_experiment(args, output_root="outputs/densenet")
-        self.train_loader, self.val_loader = None, None                         # TODO: @mukundvarmat Dataloaders
+        self.train_loader, self.val_loader = data_utils.get_mini_loaders(**self.config["data"])                        
         
         self.model = densenet.SimilarityDensenetModel(**self.config["model"])
         self.optim = train_utils.get_optimizer(self.config["optim"], self.model.parameters())
@@ -19,11 +21,14 @@ class Trainer:
         if self.warmup_epochs > 0:
             self.warmup_rate = (self.config["optim"]["lr"] - 1e-12) / self.warmup_epochs
         
-        self.loss_fn = nn.TripletMarginLoss(**self.config["loss_fn"])
-        self.best_metric = float("inf")                                         # TODO: If chosen metric is better when higher (like accuracy), set to 0
         run = wandb.init(project="isc-2021")
         self.logger.write(f"WandB run: {run.get_url()}", mode="info")
+        self.loss_fn = nn.TripletMarginLoss(**self.config["loss_fn"])
         self.start_epoch = 1
+        self.best_metric = 0
+        
+        with open(self.config["val_labels"], "rb") as f:
+            self.val_labels = pickle.load(f)
         
         if args["resume"] is not None:
             self.load_state(args["resume"])
@@ -75,7 +80,6 @@ class Trainer:
         anchor, pos, neg = batch["anchor"].to(self.device), batch["pos"].to(self.device), batch["neg"].to(self.device)
         anchor_logits, pos_logits, neg_logits = self.model(anchor), self.model(pos), self.model(neg)
         loss = self.loss_fn(anchor_logits, pos_logits, neg_logits)
-        # TODO: Add any metric computations here
         
         self.optim.zero_grad()
         loss.backward()
@@ -83,12 +87,16 @@ class Trainer:
         return {"loss": loss.item()}
     
     @torch.no_grad()
-    def eval_on_batch(self, batch):
-        anchor, pos, neg = batch["anchor"].to(self.device), batch["pos"].to(self.device), batch["neg"].to(self.device)
-        anchor_logits, pos_logits, neg_logits = self.model(anchor), self.model(pos), self.model(neg)
-        loss = self.loss_fn(anchor_logits, pos_logits, neg_logits)
-        # TODO: Add any metric computations here
-        return {"loss": loss.item()}
+    def evaluate(self):
+        features = {}
+        for step, batch in enumerate(self.val_loader):
+            imgs, paths = batch["img"].to(self.device), batch["path"] 
+            fvecs = self.model(imgs).detach().cpu().numpy()
+            features.update({path: vec for path, vec in zip(paths, fvecs)})
+            common.progress_bar(progress=(step+1)/len(self.val_loader), desc="Generating features", status="")
+        print()
+        iou_score = eval_utils.compute_neighbor_accuracy(features, self.val_labels)
+        return iou_score     
     
     def train(self):
         for epoch in range(self.start_epoch, self.config["epochs"]+1):
@@ -103,28 +111,16 @@ class Trainer:
                 common.progress_bar(progress=(step+1)/len(self.train_loader), desc=desc, status=avg_meter.return_msg())
             print()
             self.logger.write("Epoch {:4d}/{:4d} {}".format(epoch, self.config["epochs"], avg_meter.return_msg()), mode="train")
-            # TODO: If any metrics are computed, log their averages to wandb here
             self.adjust_lr(epoch)
             self.save_state(epoch)
             
             if epoch % self.config["eval_every"] == 0:
-                desc = "[VALID] Epoch {:4d}/{:4d}".format(epoch, self.config["epochs"])
-                avg_meter = common.AverageMeter()
-                self.model.eval()
+                iou = self.evaluate()
+                self.logger.write("Epoch {:4d}/{:4d} [IoU score] {:.4f}".format(epoch, self.config["epochs"], iou), mode="val")
+                wandb.log({"Val IoU": iou, "Epoch": epoch})                           
                 
-                for step, batch in enumerate(self.val_loader):
-                    outputs = self.eval_on_batch(batch)
-                    avg_meter.add(outputs)
-                    common.progress(progress=(step+1)/len(self.val_loader), desc=desc, status=avg_meter.return_msg())
-                print()
-                avg_metrics = avg_meter.return_dict()
-                self.logger.write("Epoch {:4d}/{:4d} {}".format(epoch, self.config["epochs"], avg_meter.return_msg()), mode="val")
-                wandb.log({"Val loss": avg_metrics["loss"], "Epoch": epoch})                            # TODO: Add the metrics to this log as well
-                
-                # For saving model checkpoints, I have used val loss for comparison
-                # Change the code below if using some other evaluation metric
-                if avg_metrics["loss"] < self.best_metric:
-                    self.best_metric = avg_metrics["loss"]
+                if iou > self.best_metric:
+                    self.best_metric = iou
                     self.save_checkpoint()
         print()
         self.logger.record("Completed training.", mode="info")
