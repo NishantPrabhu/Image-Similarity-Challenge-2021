@@ -109,6 +109,7 @@ class Trainer:
                 avg_meter.add(outputs)
                 wandb.log({"Train loss": outputs["loss"]})
                 common.progress_bar(progress=(step+1)/len(self.train_loader), desc=desc, status=avg_meter.return_msg())
+                break
             print()
             self.logger.write("Epoch {:4d}/{:4d} {}".format(epoch, self.config["epochs"], avg_meter.return_msg()), mode="train")
             self.adjust_lr(epoch)

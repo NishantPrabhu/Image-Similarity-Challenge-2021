@@ -1,0 +1,46 @@
+
+epochs: 500
+eval_every: 10 
+val_labels: data/mini/val_labels.pk
+
+model:
+  downsample_block_cfg: [4, 4, 4, 4] 
+  upsample_block_cfg: [4, 4, 4, 4]
+  global_feature_size: 248
+  global_expansion_scale: 4
+  downsample_growth_rate: 32
+  upsample_shrink_rate: 32
+  bottleneck_size: 4
+  dropout_prob: 0.1
+  
+data:
+  train_dir: data/mini/train/
+  val_dir: data/mini/val/
+  batch_size: 16
+  transforms:
+    std:
+      resize:
+        size: [256, 256]
+      to_tensor:
+    aug:
+      resize:
+        size: [256, 256]
+      random_flip:
+      rand_aug:
+        n_aug: 4
+      to_tensor:
+
+optim:
+  name: sgd
+  lr: 1.0
+  weight_decay: 1.e-06
+
+scheduler:
+  name: cosine
+  warmup_epochs: 10
+
+loss_fn:
+  margin: 1.0
+  p: 2
+  reduction: mean
+

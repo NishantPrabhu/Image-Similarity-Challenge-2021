@@ -74,22 +74,25 @@ def augment_val_set(dir, emoji_dir, num_augs=4):
     count = 0 
     
     for path in tqdm(img_paths, total=len(img_paths), desc="Progress"):
-        for _ in range(num_augs):
-            emoji = random.choice(emoji_paths)
-            transform = transforms.Compose([
-                imgaug.RandomBlur(min_radius=0.0, max_radius=2.0, p=0.3),
-                imgaug.RandomEmojiOverlay(opacity=0.5, p=0.2),
-                imgaug.ColorJitter(brightness_factor=0.4, contrast_factor=0.4, saturation_factor=0.4, p=0.8),
-                imgaug.Resize(width=256, height=256)
-            ])
-            img = Image.open(path).convert("RGB")
-            aug_img = transform(img)
-            aug_img.save(dir + f"{str(count)}.png")
-            if path in labels.keys():
-                labels[path].append(count)
-            else:
-                labels[path] = [count]
-            count += 1
-    
+        try:
+            for _ in range(num_augs):
+                emoji = random.choice(emoji_paths)
+                transform = transforms.Compose([
+                    imgaug.RandomBlur(min_radius=0.0, max_radius=2.0, p=0.3),
+                    imgaug.RandomEmojiOverlay(opacity=0.5, p=0.2),
+                    imgaug.ColorJitter(brightness_factor=0.4, contrast_factor=0.4, saturation_factor=0.4, p=0.8),
+                    imgaug.Resize(width=256, height=256)
+                ])
+                img = Image.open(path).convert("RGB")
+                aug_img = transform(img)
+                aug_img.save(dir + f"{str(count)}.png")
+                if path in labels.keys():
+                    labels[path].append(count)
+                else:
+                    labels[path] = [count]
+                count += 1
+        except Exception as e:
+            continue
+        
     with open("data/mini/val_labels.pk", "wb") as f:
         pickle.dump(labels, f)    
