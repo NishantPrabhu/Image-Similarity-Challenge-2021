@@ -93,14 +93,14 @@ class Trainer:
             batch = self.val_loader.get()
             imgs, paths = batch["img"].to(self.device), batch["path"] 
             fvecs = self.model(imgs).detach().cpu().numpy()
-            features.update({path: vec for path, vec in zip(paths, fvecs)})
+            features.update({path: np.expand_dims(vec, 0) for path, vec in zip(paths, fvecs)})
             common.progress_bar(progress=(step+1)/len(self.val_loader), desc="Generating features", status="")
         print()
         iou_score = eval_utils.compute_neighbor_accuracy(features, self.val_labels)
         return iou_score     
     
     def train(self):
-        for epoch in range(self.start_epoch, self.config["epochs"]+1):
+        for epoch in range(0, self.config["epochs"]+1):
             desc = "[TRAIN] Epoch {:4d}/{:4d}".format(epoch, self.config["epochs"])
             avg_meter = common.AverageMeter()
             self.model.train()
@@ -110,19 +110,18 @@ class Trainer:
                 avg_meter.add(outputs)
                 wandb.log({"Train loss": outputs["loss"]})
                 common.progress_bar(progress=(step+1)/len(self.train_loader), desc=desc, status=avg_meter.return_msg())
-                break
             print()
             self.logger.write("Epoch {:4d}/{:4d} {}".format(epoch, self.config["epochs"], avg_meter.return_msg()), mode="train")
             self.adjust_lr(epoch)
             self.save_state(epoch)
             
-            if epoch % self.config["eval_every"] == 0:
-                iou = self.evaluate()
-                self.logger.write("Epoch {:4d}/{:4d} [IoU score] {:.4f}".format(epoch, self.config["epochs"], iou), mode="val")
-                wandb.log({"Val IoU": iou, "Epoch": epoch})                           
+            # if epoch % self.config["eval_every"] == 0:
+            #     iou = self.evaluate()
+            #     self.logger.write("Epoch {:4d}/{:4d} [IoU score] {:.4f}".format(epoch, self.config["epochs"], iou), mode="val")
+            #     wandb.log({"Val IoU": iou, "Epoch": epoch})                           
                 
-                if iou > self.best_metric:
-                    self.best_metric = iou
-                    self.save_checkpoint()
+            #     if iou > self.best_metric:
+            #         self.best_metric = iou
+            #         self.save_checkpoint()
         print()
         self.logger.record("Completed training.", mode="info")

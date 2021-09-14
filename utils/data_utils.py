@@ -47,7 +47,13 @@ class EvaluationDataloader:
             path = self.paths[self.ptr]
             img = Image.open(path).convert("RGB")
             imgs.append(self.transform(img))
-            paths.append(path)            
+            path = path.replace(".png", ".jpg")
+            paths.append(path)     
+            
+            self.ptr += 1
+            if self.ptr >= len(self.paths):
+                self.ptr = 0
+                      
         imgs = torch.stack(imgs, dim=0)
         return {"img": imgs, "path": paths}
     
