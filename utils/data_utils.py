@@ -39,7 +39,7 @@ class EvaluationDataloader:
         self.ptr = 0 
         
     def __len__(self):
-        return len(self.paths)
+        return len(self.paths) // self.batch_size
     
     def get(self):
         imgs, paths = [], []

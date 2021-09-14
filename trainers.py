@@ -15,7 +15,7 @@ class Trainer:
         self.config, self.output_dir, self.logger, self.device = common.initialize_experiment(args, output_root="outputs/densenet")
         self.train_loader, self.val_loader = data_utils.get_mini_loaders(**self.config["data"])                        
         
-        self.model = densenet.SimilarityDensenetModel(**self.config["model"])
+        self.model = densenet.SimilarityDensenetModel(**self.config["model"]).to(self.device)
         self.optim = train_utils.get_optimizer(self.config["optim"], self.model.parameters())
         self.scheduler, self.warmup_epochs = train_utils.get_scheduler({**self.config["scheduler"], "epochs": self.config["epochs"]}, self.optim)
         if self.warmup_epochs > 0:
@@ -89,7 +89,8 @@ class Trainer:
     @torch.no_grad()
     def evaluate(self):
         features = {}
-        for step, batch in enumerate(self.val_loader):
+        for step in range(len(self.val_loader)):
+            batch = self.val_loader.get()
             imgs, paths = batch["img"].to(self.device), batch["path"] 
             fvecs = self.model(imgs).detach().cpu().numpy()
             features.update({path: vec for path, vec in zip(paths, fvecs)})
