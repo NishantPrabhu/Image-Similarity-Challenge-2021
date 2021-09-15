@@ -100,7 +100,7 @@ class Trainer:
         return iou_score     
     
     def train(self):
-        for epoch in range(0, self.config["epochs"]+1):
+        for epoch in range(self.start_epoch, self.config["epochs"]+1):
             desc = "[TRAIN] Epoch {:4d}/{:4d}".format(epoch, self.config["epochs"])
             avg_meter = common.AverageMeter()
             self.model.train()
