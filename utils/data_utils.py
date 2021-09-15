@@ -44,11 +44,14 @@ class EvaluationDataloader:
     def get(self):
         imgs, paths = [], []
         for _ in range(self.batch_size):
-            path = self.paths[self.ptr]
-            img = Image.open(path).convert("RGB")
-            imgs.append(self.transform(img))
-            path = path.replace(".png", ".jpg")
-            paths.append(path)     
+            try:
+                path = self.paths[self.ptr]
+                img = Image.open(path).convert("RGB")
+                imgs.append(self.transform(img))
+                path = path.replace(".png", ".jpg")
+                paths.append(path)   
+            except Exception as e:
+                pass  
             
             self.ptr += 1
             if self.ptr >= len(self.paths):
