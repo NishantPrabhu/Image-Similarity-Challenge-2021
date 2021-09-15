@@ -4,14 +4,10 @@ eval_every: 10
 val_labels: data/mini/val_labels.pk
 
 model:
-  downsample_block_cfg: [4, 4, 4, 4] 
-  upsample_block_cfg: [4, 4, 4, 4]
-  global_feature_size: 248
-  global_expansion_scale: 4
-  downsample_growth_rate: 32
-  upsample_shrink_rate: 32
-  bottleneck_size: 4
-  dropout_prob: 0.1
+  backbone_type: madlanet
+  backbone_kwargs: 
+    type: dla34
+  out_dim: 128
   
 data:
   train_dir: data/mini/train/

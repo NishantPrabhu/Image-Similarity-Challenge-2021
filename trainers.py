@@ -6,7 +6,7 @@ import pickle
 import numpy as np
 import torch.nn as nn 
 import torch.nn.functional as F
-from networks import densenet
+from networks import network
 from utils import common, train_utils, eval_utils, data_utils, losses
 
 
@@ -16,7 +16,7 @@ class Trainer:
         self.config, self.output_dir, self.logger, self.device = common.initialize_experiment(args, output_root="outputs/densenet")
         self.train_loader, self.val_loader = data_utils.get_mini_loaders(**self.config["data"])                        
         
-        self.model = densenet.SimilarityDensenetModel(**self.config["model"]).to(self.device)
+        self.model = network.Network(**self.config["model"]).to(self.device)
         self.optim = train_utils.get_optimizer(self.config["optim"], self.model.parameters())
         self.scheduler, self.warmup_epochs = train_utils.get_scheduler({**self.config["scheduler"], "epochs": self.config["epochs"]}, self.optim)
         if self.warmup_epochs > 0:
