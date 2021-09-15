@@ -5,8 +5,9 @@ import wandb
 import pickle
 import numpy as np
 import torch.nn as nn 
+import torch.nn.functional as F
 from networks import densenet
-from utils import common, train_utils, eval_utils, data_utils
+from utils import common, train_utils, eval_utils, data_utils, losses
 
 
 class Trainer:
@@ -23,7 +24,7 @@ class Trainer:
         
         run = wandb.init(project="isc-2021")
         self.logger.write(f"WandB run: {run.get_url()}", mode="info")
-        self.loss_fn = nn.TripletMarginLoss(**self.config["loss_fn"])
+        self.loss_fn = losses.ContrastiveLoss(**self.config["loss_fn"])
         self.start_epoch = 1
         self.best_metric = 0
         
@@ -77,9 +78,9 @@ class Trainer:
             pass
         
     def train_on_batch(self, batch):
-        anchor, pos, neg = batch["anchor"].to(self.device), batch["pos"].to(self.device), batch["neg"].to(self.device)
-        anchor_logits, pos_logits, neg_logits = self.model(anchor), self.model(pos), self.model(neg)
-        loss = self.loss_fn(anchor_logits, pos_logits, neg_logits)
+        anchor, pos = batch["anchor"].to(self.device), batch["pos"].to(self.device)  # batch["neg"].to(self.device)
+        anchor_logits, pos_logits = self.model(anchor), self.model(pos)  # self.model(neg)
+        loss = self.loss_fn(anchor_logits, pos_logits)
         
         self.optim.zero_grad()
         loss.backward()
@@ -92,7 +93,8 @@ class Trainer:
         for step in range(len(self.val_loader)):
             batch = self.val_loader.get()
             imgs, paths = batch["img"].to(self.device), batch["path"] 
-            fvecs = self.model(imgs).detach().cpu().numpy()
+            fvecs = self.model(imgs).detach().cpu()
+            fvecs = F.normalize(fvecs, p=2, dim=-1).numpy()
             features.update({path: np.expand_dims(vec, 0) for path, vec in zip(paths, fvecs)})
             common.progress_bar(progress=(step+1)/len(self.val_loader), desc="Generating features", status="")
         print()

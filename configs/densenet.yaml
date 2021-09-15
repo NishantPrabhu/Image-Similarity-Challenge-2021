@@ -40,7 +40,5 @@ scheduler:
   warmup_epochs: 10
 
 loss_fn:
-  margin: 1.0
-  p: 2
-  reduction: mean
-
+  normalize: True
+  temperature: 0.5
