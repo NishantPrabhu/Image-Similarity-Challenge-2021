@@ -110,18 +110,19 @@ class Trainer:
                 avg_meter.add(outputs)
                 wandb.log({"Train loss": outputs["loss"]})
                 common.progress_bar(progress=(step+1)/len(self.train_loader), desc=desc, status=avg_meter.return_msg())
+                break
             print()
             self.logger.write("Epoch {:4d}/{:4d} {}".format(epoch, self.config["epochs"], avg_meter.return_msg()), mode="train")
             self.adjust_lr(epoch)
             self.save_state(epoch)
             
-            # if epoch % self.config["eval_every"] == 0:
-            #     iou = self.evaluate()
-            #     self.logger.write("Epoch {:4d}/{:4d} [IoU score] {:.4f}".format(epoch, self.config["epochs"], iou), mode="val")
-            #     wandb.log({"Val IoU": iou, "Epoch": epoch})                           
+            if epoch % self.config["eval_every"] == 0:
+                iou = self.evaluate()
+                self.logger.write("Epoch {:4d}/{:4d} [IoU score] {:.4f}".format(epoch, self.config["epochs"], iou), mode="val")
+                wandb.log({"Val IoU": iou, "Epoch": epoch})                           
                 
-            #     if iou > self.best_metric:
-            #         self.best_metric = iou
-            #         self.save_checkpoint()
+                if iou > self.best_metric:
+                    self.best_metric = iou
+                    self.save_checkpoint()
         print()
         self.logger.record("Completed training.", mode="info")

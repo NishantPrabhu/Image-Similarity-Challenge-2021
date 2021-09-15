@@ -16,7 +16,7 @@ model:
 data:
   train_dir: data/mini/train/
   val_dir: data/mini/val/
-  batch_size: 16
+  batch_size: 8
   transforms:
     std:
       resize:
