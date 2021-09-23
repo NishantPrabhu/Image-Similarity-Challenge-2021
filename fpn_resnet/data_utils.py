@@ -8,7 +8,7 @@ import augly.image as imgaug
 from PIL import Image
 from tqdm import tqdm
 from torchvision import transforms
-from .vision_augs import get_transform
+from vision_augs import get_transform
 from torch.utils.data import Dataset, DataLoader
 
 
@@ -25,10 +25,10 @@ class RetrievalDataset(Dataset):
     
     def __getitem__(self, index):
         img = Image.open(self.paths[index]).convert("RGB")
-        img = self.std_transform(img)
+        orig = self.std_transform(img)
         aug_1 = self.aug_transform(img)
         aug_2 = self.aug_transform(img)
-        return img, aug_1, aug_2
+        return orig, aug_1, aug_2
     
 
 class EvaluationDataloader:
@@ -72,7 +72,7 @@ def get_mini_loaders(train_dir, val_dir, batch_size, transforms):
     train_paths = [os.path.join(train_dir, f) for f in os.listdir(train_dir)]
     val_paths = [os.path.join(val_dir, f) for f in os.listdir(val_dir)]
     train_dataset = RetrievalDataset(paths=train_paths, transforms=transforms)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2, collate_fn=collate_func)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_func)
     val_loader = EvaluationDataloader(paths=val_paths, batch_size=batch_size, transform=get_transform(transforms["std"]))
     return train_loader, val_loader
 
@@ -103,5 +103,5 @@ def augment_val_set(dir, emoji_dir, num_augs=4):
         except Exception as e:
             continue
         
-    with open("data/mini/val_labels.pk", "wb") as f:
-        pickle.dump(labels, f)    
+    with open("data/val_labels.pk", "wb") as f:
+        pickle.dump(labels, f)

@@ -101,7 +101,7 @@ class Trainer:
         for step in range(len(self.val_loader)):
             batch = self.val_loader.get()
             imgs, paths = batch["img"].to(self.device), batch["path"] 
-            fvecs = self.model(imgs).detach().cpu()
+            fvecs = self.model(imgs)["features"].detach().cpu()
             fvecs = F.normalize(fvecs, p=2, dim=-1).numpy()
             features.update({path: np.expand_dims(vec, 0) for path, vec in zip(paths, fvecs)})
             common.progress_bar(progress=(step+1)/len(self.val_loader), desc="Generating features", status="")

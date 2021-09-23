@@ -59,5 +59,6 @@ class UpsampleLoss(nn.Module):
         
         losses = []
         for i in range(len(upsample_1)):
-            losses.append(self.contrastive_loss(upsample_1[:, :, i], upsample_2[:, :, i]))
-        return torch.mean(losses)
+            for j in range(upsample_1[i].size(2)):
+                losses.append(self.contrastive_loss(upsample_1[i][:, :, j], upsample_2[i][:, :, j]))
+        return torch.tensor(losses).mean()

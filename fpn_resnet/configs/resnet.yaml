@@ -1,7 +1,7 @@
 
 epochs: 500
-eval_every: 10 
-val_labels: data/mini/val_labels.pk
+eval_every: 1
+val_labels: data/val_labels.pk
 upsample_loss_lambda: 1.0
 
 model:
@@ -9,8 +9,8 @@ model:
   upsample_layers: [2, 2, 2, 2]
   
 data:
-  train_dir: data/mini/train/
-  val_dir: data/mini/val/
+  train_dir: data/query/
+  val_dir: data/query/
   batch_size: 8
   transforms:
     std:
