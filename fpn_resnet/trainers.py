@@ -129,13 +129,13 @@ class Trainer:
             self.adjust_lr(epoch)
             self.save_state(epoch)
             
-            if epoch % self.config["eval_every"] == 0:
-                accuracy = self.evaluate()
-                self.logger.record("Epoch {:4d}/{:4d} [Accuracy] {:.4f}".format(epoch, self.config["epochs"], accuracy), mode="val")
-                wandb.log({"Val accuracy": accuracy, "Epoch": epoch})                           
+            # if epoch % self.config["eval_every"] == 0:
+            #     accuracy = self.evaluate()
+            #     self.logger.record("Epoch {:4d}/{:4d} [Accuracy] {:.4f}".format(epoch, self.config["epochs"], accuracy), mode="val")
+            #     wandb.log({"Val accuracy": accuracy, "Epoch": epoch})                           
                 
-                if accuracy > self.best_metric:
-                    self.best_metric = accuracy
-                    self.save_checkpoint()
+            #     if accuracy > self.best_metric:
+            #         self.best_metric = accuracy
+            #         self.save_checkpoint()
         print()
         self.logger.record("Completed training.", mode="info")
