@@ -1,7 +1,7 @@
 
 epochs: 500
 eval_every: 1
-val_labels: data/val_labels.pk
+val_labels: data/public_ground_truth.csv
 upsample_loss_lambda: 1.0
 
 model:
@@ -9,8 +9,9 @@ model:
   upsample_layers: [2, 2, 2, 2]
   
 data:
-  train_dir: data/query/
-  val_dir: data/query/
+  train_dir: data/train/
+  query_dir: data/query/
+  ref_dir: data/reference/
   batch_size: 8
   transforms:
     std:

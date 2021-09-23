@@ -17,8 +17,8 @@ from networks import SimilarityResNet
 class Trainer:
     
     def __init__(self, args):
-        self.config, self.output_dir, self.logger, self.device = common.initialize_experiment(args, output_root="outputs/densenet")
-        self.train_loader, self.val_loader = data_utils.get_mini_loaders(**self.config["data"])                        
+        self.config, self.output_dir, self.logger, self.device = common.initialize_experiment(args, output_root="outputs/resnet_fpn")
+        self.train_loader, self.query_loader, self.ref_loader = data_utils.get_loaders(**self.config["data"])                        
         
         self.model = SimilarityResNet(**self.config["model"]).to(self.device)
         self.optim = train_utils.get_optimizer(self.config["optim"], self.model.parameters())
@@ -32,10 +32,8 @@ class Trainer:
         self.upsample_loss = losses.UpsampleLoss(**self.config["loss_fn"])
         self.start_epoch = 1
         self.best_metric = 0
-        
-        with open(self.config["val_labels"], "rb") as f:
-            self.val_labels = pickle.load(f)
-        
+        self.query_ref_map = data_utils.process_ground_truth(self.config["public_ground_truth"])
+                
         if args["resume"] is not None:
             self.load_state(args["resume"])
         if args["load"] is not None:
@@ -97,17 +95,23 @@ class Trainer:
     
     @torch.no_grad()
     def evaluate(self):
-        features = {}
-        for step in range(len(self.val_loader)):
-            batch = self.val_loader.get()
+        query_features, ref_features = {}, {}
+        for step, batch in enumerate(self.query_loader):
             imgs, paths = batch["img"].to(self.device), batch["path"] 
             fvecs = self.model(imgs)["features"].detach().cpu()
             fvecs = F.normalize(fvecs, p=2, dim=-1).numpy()
-            features.update({path: np.expand_dims(vec, 0) for path, vec in zip(paths, fvecs)})
-            common.progress_bar(progress=(step+1)/len(self.val_loader), desc="Generating features", status="")
+            query_features.update({path: np.expand_dims(vec, 0) for path, vec in zip(paths, fvecs)})
+            common.progress_bar(progress=(step+1)/len(self.query_loader), desc="Query features", status="") 
         print()
-        iou_score = eval_utils.compute_neighbor_accuracy(features, self.val_labels)
-        return iou_score     
+        for step, batch in enumerate(self.ref_loader):
+            imgs, paths = batch["img"].to(self.device), batch["path"] 
+            fvecs = self.model(imgs)["features"].detach().cpu()
+            fvecs = F.normalize(fvecs, p=2, dim=-1).numpy()
+            query_features.update({path: np.expand_dims(vec, 0) for path, vec in zip(paths, fvecs)})
+            common.progress_bar(progress=(step+1)/len(self.ref_loader), desc="Reference features", status="") 
+        print()
+        accuracy = eval_utils.compute_neighbor_accuracy(query_features, ref_features, self.query_ref_map)
+        return accuracy
     
     def train(self):
         for epoch in range(self.start_epoch, self.config["epochs"]+1):
@@ -126,12 +130,12 @@ class Trainer:
             self.save_state(epoch)
             
             if epoch % self.config["eval_every"] == 0:
-                iou = self.evaluate()
-                self.logger.record("Epoch {:4d}/{:4d} [IoU score] {:.4f}".format(epoch, self.config["epochs"], iou), mode="val")
-                wandb.log({"Val IoU": iou, "Epoch": epoch})                           
+                accuracy = self.evaluate()
+                self.logger.record("Epoch {:4d}/{:4d} [Accuracy] {:.4f}".format(epoch, self.config["epochs"], accuracy), mode="val")
+                wandb.log({"Val accuracy": accuracy, "Epoch": epoch})                           
                 
-                if iou > self.best_metric:
-                    self.best_metric = iou
+                if accuracy > self.best_metric:
+                    self.best_metric = accuracy
                     self.save_checkpoint()
         print()
         self.logger.record("Completed training.", mode="info")

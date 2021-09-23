@@ -3,21 +3,12 @@ import faiss
 import numpy as np 
 
 
-def compute_neighbor_accuracy(features, targets, k=4):
-    fvecs = np.concatenate(list(features.values()), axis=0)
-    index = faiss.IndexFlatIP(fvecs.shape[1])
-    index.add(fvecs.astype(np.float32))
-    _, neighbor_idx = index.search(fvecs, k+1)
-    predictions = {name: indices for name, indices in zip(list(features.keys()), neighbor_idx) if name in targets.keys()}
-
-    idx2file = {i: file for i, file in enumerate(list(features.keys()))}
-    for k, v in predictions.items():
-        new_v = [idx2file[idx] for idx in v]
-        predictions[k] = new_v
-        
-    intersection, union = 0, 0
-    for file in predictions.keys():
-        ref, pred = [str(f) for f in targets[file]], [str(f) for f in predictions[file]]
-        intersection += len(list(set(ref) & set(pred)))
-        union += len(list(set(ref) | set(pred)))
-    return intersection/union
+def compute_neighbor_accuracy(query_features, ref_features, query_ref_map):
+    query_files, query_fvecs = np.asarray(list(query_features.keys())), np.concatenate(list(query_features.values()), axis=0).astype(np.float32)
+    ref_files, ref_fvecs = np.asarray(list(ref_features.keys())), np.concatenate(list(ref_features.values()), axis=0).astype(np.float32)
+    
+    index = faiss.IndexFlatIP(ref_fvecs.shape[1])
+    index.add(ref_fvecs)
+    _, ref_neighbors = index.search(query_fvecs, 1)
+    ref_predictions = ref_files[ref_neighbors.reshape(-1,)] 
+    return (ref_predictions == ref_files).mean()

@@ -3,10 +3,12 @@ import os
 import torch 
 import random
 import pickle
+import pandas as pd
 import augly.image as imgaug
 
 from PIL import Image
 from tqdm import tqdm
+from ntpath import basename
 from torchvision import transforms
 from vision_augs import get_transform
 from torch.utils.data import Dataset, DataLoader
@@ -28,53 +30,33 @@ class RetrievalDataset(Dataset):
         orig = self.std_transform(img)
         aug_1 = self.aug_transform(img)
         aug_2 = self.aug_transform(img)
-        return orig, aug_1, aug_2
-    
-
-class EvaluationDataloader:
-    
-    def __init__(self, paths, batch_size, transform):
-        self.transform = transform
-        self.batch_size = batch_size
-        self.paths = paths 
-        self.ptr = 0 
-        
-    def __len__(self):
-        return len(self.paths) // self.batch_size
-    
-    def get(self):
-        imgs, paths = [], []
-        for _ in range(self.batch_size):
-            try:
-                path = self.paths[self.ptr]
-                img = Image.open(path).convert("RGB")
-                imgs.append(self.transform(img))
-                path = path.replace(".png", ".jpg")
-                paths.append(path)   
-            except Exception as e:
-                pass  
-            
-            self.ptr += 1
-            if self.ptr >= len(self.paths):
-                self.ptr = 0
-                      
-        imgs = torch.stack(imgs, dim=0)
-        return {"img": imgs, "path": paths}
+        return basename(self.paths[index]), orig, aug_1, aug_2
     
 
 def collate_func(batch):
-    img, aug1, aug2 = zip(*batch)
-    img, aug1, aug2 = list(img), list(aug1), list(aug2)
+    paths, img, aug1, aug2 = zip(*batch)
+    paths, img, aug1, aug2 = list(paths), list(img), list(aug1), list(aug2)
     img, aug1, aug2 = torch.stack(img, 0), torch.stack(aug1, 0), torch.stack(aug2, 0)
-    return {"img": img, "aug_1": aug1, "aug_2": aug2}
+    return {"path": paths, "img": img, "aug_1": aug1, "aug_2": aug2}
 
-def get_mini_loaders(train_dir, val_dir, batch_size, transforms):
+def process_ground_truth(csv_file):
+    gt = pd.read_csv(csv_file)
+    query = gt[gt["reference_id"].notnull()]["query_id"].values.tolist()
+    reference = gt[gt["reference_id"].notnull()]["reference_id"].values.tolist()
+    qr_match = {q: r for q, r in zip(query, reference)}
+    return qr_match
+
+def get_loaders(train_dir, query_dir, ref_dir, batch_size, transforms):
     train_paths = [os.path.join(train_dir, f) for f in os.listdir(train_dir)]
-    val_paths = [os.path.join(val_dir, f) for f in os.listdir(val_dir)]
+    query_paths = [os.path.join(query_dir, f) for f in os.listdir(query_dir)]
+    ref_paths = [os.path.join(ref_dir, f) for f in os.listdir(ref_dir)]
     train_dataset = RetrievalDataset(paths=train_paths, transforms=transforms)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_func)
-    val_loader = EvaluationDataloader(paths=val_paths, batch_size=batch_size, transform=get_transform(transforms["std"]))
-    return train_loader, val_loader
+    query_dataset = RetrievalDataset(paths=query_paths, transforms=transforms)
+    ref_dataset = RetrievalDataset(paths=ref_paths, transforms=transforms)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=2, shuffle=True, collate_fn=collate_func)
+    query_loader = DataLoader(query_dataset, batch_size=batch_size, num_workers=2, shuffle=False, collate_fn=collate_func)
+    ref_loader = DataLoader(ref_dataset, batch_size=batch_size, num_workers=2, shuffle=False, collate_fn=collate_func)
+    return train_loader, query_loader, ref_loader
 
 def augment_val_set(dir, emoji_dir, num_augs=4):
     img_paths = [os.path.join(dir, f) for f in os.listdir(dir)]
