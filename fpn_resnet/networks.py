@@ -116,7 +116,6 @@ class DownResNet(nn.Module):
         self.layer1 = self._make_layer(block, 64, layers[0])
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2, dilate=replace_stride_with_dilation[0])
         self.layer3 = self._make_layer(block, 256, layers[2], stride=2, dilate=replace_stride_with_dilation[1])
-        self.layer4 = self._make_layer(block, 512, layers[3], stride=2, dilate=replace_stride_with_dilation[2])
         self.avgpool = nn.AdaptiveAvgPool2d(output_size=(1, 1))
         self.flatten = nn.Flatten(start_dim=1)
 
@@ -164,8 +163,6 @@ class DownResNet(nn.Module):
         outputs["layer2"] = x
         x = self.layer3(x)
         outputs["layer3"] = x
-        x = self.layer4(x)
-        outputs["layer4"] = x
         x = self.avgpool(x)
         x = self.flatten(x)
         return x, outputs
@@ -182,11 +179,10 @@ class UpResNet(nn.Module):
         self.groups = groups
         self.base_width = width_per_group
 
-        self.layer1 = self._make_layer(block, 512, layers[3], stride=2)
-        self.layer2 = self._make_layer(block, 256, layers[2], stride=2)
-        self.layer3 = self._make_layer(block, 128, layers[1], stride=2)
-        self.layer4 = self._make_layer(block, 64, layers[0], stride=1)
-        self.upsample5 = Upsample(in_planes=64, out_planes=3)      
+        self.layer1 = self._make_layer(block, 256, layers[2], stride=2)
+        self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
+        self.layer3 = self._make_layer(block, 64, layers[0], stride=1)
+        self.upsample = Upsample(in_planes=64, out_planes=3)      
         
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -210,34 +206,43 @@ class UpResNet(nn.Module):
 
     def forward(self, x, swish_inputs):
         outputs = {}
-        x = _swish(x, swish_inputs["layer4"])
+        x = _swish(x, swish_inputs["layer3"])
         x = self.layer1(x)
         outputs["layer1"] = x
-        x = _swish(x, swish_inputs["layer3"])
+        x = _swish(x, swish_inputs["layer2"])
         x = self.layer2(x)
         outputs["layer2"] = x
-        x = _swish(x, swish_inputs["layer2"])
+        x = _swish(x, swish_inputs["layer1"])
         x = self.layer3(x)
         outputs["layer3"] = x
-        x = _swish(x, swish_inputs["layer1"])
-        x = self.layer4(x)
-        x = self.upsample5(x)
-        outputs["layer4"] = x
+        x = self.upsample(x)
         return x, outputs
     
     
 class SimilarityResNet(nn.Module):
     
-    def __init__(self, downsample_layers=[2, 2, 2, 2], upsample_layers=[2, 2, 2, 2]):
+    def __init__(self, downsample_layers=[2, 2, 2], upsample_layers=[2, 2, 2]):
         super(SimilarityResNet, self).__init__()
-        self.global_scaler = nn.Linear(512, 512*64, bias=False)
         self.down_1 = DownResNet(DownBasicBlock, downsample_layers)
         self.up_1 = UpResNet(UpBasicBlock, upsample_layers)
         self.down_2 = DownResNet(DownBasicBlock, downsample_layers)
+        self.global_scaler = nn.Linear(256, 256*256, bias=False)
+        self.proj_head = nn.Linear(256, 128)
         
     def forward(self, x):
         global_features, d1_outputs = self.down_1(x)
-        global_features = self.global_scaler(global_features).view(x.size(0), -1, 8, 8)
+        global_features = self.global_scaler(global_features).view(x.size(0), -1, 16, 16)
         reconstructed, u1_outputs = self.up_1(global_features, d1_outputs)
         final_features, _ = self.down_2(x)
+        final_features = self.proj_head(final_features)
         return {"up_outputs": u1_outputs, "features": final_features}
+    
+    
+    
+if __name__ == "__main__":
+
+    # If model architecture is changed, use this to see if it's working
+    model = SimilarityResNet()
+    x = torch.randn(1, 3, 256, 256)
+    out = model(x)
+    print(out["features"].size())

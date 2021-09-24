@@ -1,18 +1,18 @@
 
 epochs: 500
-eval_every: 1
+eval_every: 10
 public_ground_truth: data/public_ground_truth.csv
 upsample_loss_lambda: 1.0
 
 model:
-  downsample_layers: [2, 2, 2, 2]
-  upsample_layers: [2, 2, 2, 2]
+  downsample_layers: [2, 2, 2]
+  upsample_layers: [2, 2, 2]
   
 data:
   train_dir: data/train/
   query_dir: data/query/
   ref_dir: data/reference/
-  batch_size: 8
+  batch_size: 32
   transforms:
     std:
       resize:
