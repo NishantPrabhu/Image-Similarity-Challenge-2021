@@ -33,7 +33,9 @@ class Trainer:
         self.start_epoch = 1
         self.best_metric = 0
         self.query_ref_map = data_utils.process_ground_truth(self.config["public_ground_truth"])
-                
+        
+        self.logger.record(f"Model param count: {common.count_parameters(self.model)}")
+        
         if args["resume"] is not None:
             self.load_state(args["resume"])
         if args["load"] is not None:
