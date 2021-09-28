@@ -3,6 +3,11 @@ epochs: 500
 eval_every: 10
 public_ground_truth: data/public_ground_truth.csv
 upsample_loss_lambda: 1.0
+momentum: 0.999
+
+memory_bank:
+  queue_size: 65000
+  feature_size: 128
 
 model:
   downsample_layers: [2, 2, 2]
