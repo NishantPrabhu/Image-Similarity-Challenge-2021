@@ -153,19 +153,19 @@ class Bottleneck(nn.Module):
 
 
 class DownResNet(nn.Module):
-    def __init__(self, block, num_blocks):
+    def __init__(self, block, num_blocks, in_dim=64):
         super(DownResNet, self).__init__()
-        self.in_planes = 64
+        self.in_planes = in_dim
+        self.channels = [int(in_dim * 2 ** f * block.expansion) for f in range(4)]
 
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        self.bn1 = nn.BatchNorm2d(64)
+        self.conv1 = nn.Conv2d(3, in_dim, kernel_size=7, stride=2, padding=3, bias=False)
+        self.bn1 = nn.BatchNorm2d(in_dim)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 
-        self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1)
-        self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
-        self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2)
-        self.layer4 = self._make_layer(block, 512, num_blocks[3], stride=2)
-        self.channels = [int(f * block.expansion) for f in [64, 128, 256, 512]]
+        self.layer1 = self._make_layer(block, self.channels[0], num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, self.channels[1], num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(block, self.channels[2], num_blocks[2], stride=2)
+        self.layer4 = self._make_layer(block, self.channels[3], num_blocks[3], stride=2)
 
     def _make_layer(self, block, planes, num_blocks, stride=1, down=True):
         strides = [stride] + [1] * (num_blocks - 1)
@@ -185,15 +185,24 @@ class DownResNet(nn.Module):
 
 
 class UpResNet(nn.Module):
-    def __init__(self, block, num_blocks, skip=False):
+    def __init__(self, block, num_blocks, skip=False, in_dim=512):
         super(UpResNet, self).__init__()
-        self.in_planes = 512
+        self.in_planes = in_dim
+        self.channels = [int(in_dim * 0.5 ** f * block.expansion) for f in range(4)]
+
         block.expansion = 1 / block.expansion
-        self.layer1 = self._make_layer(block, 512, num_blocks[0], stride=2, down=False, skip=skip)
-        self.layer2 = self._make_layer(block, 256, num_blocks[1], stride=2, down=False, skip=skip)
-        self.layer3 = self._make_layer(block, 128, num_blocks[2], stride=2, down=False, skip=skip)
-        self.layer4 = self._make_layer(block, 64, num_blocks[3], stride=2, down=False, skip=skip)
-        self.channels = [int(f * block.expansion) for f in [512, 256, 128, 64]]
+        self.layer1 = self._make_layer(
+            block, self.channels[0], num_blocks[0], stride=2, down=False, skip=skip
+        )
+        self.layer2 = self._make_layer(
+            block, self.channels[1], num_blocks[1], stride=2, down=False, skip=skip
+        )
+        self.layer3 = self._make_layer(
+            block, self.channels[2], num_blocks[2], stride=2, down=False, skip=skip
+        )
+        self.layer4 = self._make_layer(
+            block, self.channels[3], num_blocks[3], stride=2, down=False, skip=skip
+        )
 
     def _make_layer(self, block, planes, num_blocks, stride=1, down=True, skip=False):
         strides = [stride] + [1] * (num_blocks - 1)
@@ -289,11 +298,11 @@ class ProjectionHead(nn.Module):
 class Network(nn.Module):
     TYPE = {"resnet18": (BasicBlock, [2, 2, 2, 2])}
 
-    def __init__(self, type="resnet18", skip=False, out_dim=256, proj_dim=256):
+    def __init__(self, in_dim=64, type="resnet18", skip=False, out_dim=256, proj_dim=256):
         super().__init__()
         block, num_blocks = self.TYPE[type]
 
-        self.down1 = DownResNet(block, num_blocks)
+        self.down1 = DownResNet(block, num_blocks, in_dim)
         self.down1_mlp = ProjectionHead("mlp", self.down1.channels[-1], proj_dim)
         self.down1_dense = ProjectionHead("dense", self.down1.channels[-1], proj_dim)
         self.avg_pool = nn.AdaptiveAvgPool2d((1, 1))
@@ -304,7 +313,7 @@ class Network(nn.Module):
             nn.Linear(self.down1.channels[-1], 16 * self.down1.channels[-1]),
         )
 
-        self.up1 = UpResNet(block, num_blocks, skip)
+        self.up1 = UpResNet(block, num_blocks, skip, self.down1.channels[-1])
 
         self.down2 = FPN(self.up1.channels, out_dim)
         self.down2_mlp = ProjectionHead("mlp", out_dim, proj_dim)
@@ -543,7 +552,7 @@ class UnsupervisedWrapper(nn.Module):
 if __name__ == "__main__":
     a = torch.randn(2, 3, 256, 256).cuda()
     b = torch.randn(2, 3, 256, 256).cuda()
-    net = Network()
+    net = Network(in_dim=32)
     net = UnsupervisedWrapper(net).cuda()
     out = net(a, b)
     print([o.shape for o in out])

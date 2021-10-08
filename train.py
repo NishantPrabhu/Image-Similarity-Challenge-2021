@@ -113,7 +113,11 @@ class Trainer:
         )
 
         model = network.Network(
-            type=args.type, skip=args.skip, out_dim=args.out_dim, proj_dim=args.proj_dim
+            type=args.type,
+            in_dim=args.in_dim,
+            skip=args.skip,
+            out_dim=args.out_dim,
+            proj_dim=args.proj_dim,
         )
         self.model = network.UnsupervisedWrapper(
             model=model, proj_dim=args.proj_dim, q_size=args.q_size, m=args.m, temp=args.temp

@@ -56,6 +56,7 @@ def add_args(parser):
         "--n_workers", type=int, default=4, help="number of workers for dataloading."
     )
     parser.add_argument("--type", type=str, default="resnet18", help="network backbone type.")
+    parser.add_argument("--in_dim", type=int, default=64, help="initial feature vector dimension.")
     parser.add_argument(
         "--skip",
         type=bool,
