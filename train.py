@@ -36,7 +36,7 @@ class Trainer:
             t = [
                 transforms.RandomHorizontalFlip(),
                 transforms.RandomResizedCrop(args.img_size, scale=(0.2, 1.0)),
-                augment.RandomAugment(args.rand_aug_n),
+                augment.RandomAugment(args.n_rand_aug),
                 augment.Cutout(args.cut_len),
             ]
         elif args.auto_aug:
@@ -63,6 +63,8 @@ class Trainer:
                 transforms.RandomApply([augment.GaussianBlur(args.blur_sigma)], p=args.blur_prob),
                 transforms.RandomHorizontalFlip(),
             ]
+        if args.augly_aug:
+            t.insert(0, transforms.RandomApply([augment.AuglyTransforms()], p=args.augly_aug_prob))
         train_transform = transforms.Compose(
             [
                 *t,
@@ -85,7 +87,10 @@ class Trainer:
             k_transform=train_transform,
         )
         val_dset = dataset.ISC(
-            root=args.data_root, split="val", q_transform=val_transform, k_transform=val_transform
+            root=args.data_root,
+            split="query_val",
+            q_transform=val_transform,
+            k_transform=val_transform,
         )
         if args.dist:
             train_sampler = DistributedSampler(train_dset)
@@ -105,7 +110,7 @@ class Trainer:
             )
 
         self.val_loader = DataLoader(
-            self.val_dset,
+            val_dset,
             batch_size=args.batch_size,
             shuffle=False,
             num_workers=args.n_workers,
@@ -254,7 +259,6 @@ class Trainer:
                     self.lr_sched.step()
 
             self.train_steps += 1
-
         if self.main_thread:
             pbar(1, msg=self.metric_meter.msg())
 
@@ -322,10 +326,10 @@ class Trainer:
                 if train_loss < best_train:
                     print(
                         "\x1b[34m"
-                        + f"train loss improved from {round(best_train_loss, 5)} to {round(train_loss, 5)}"
+                        + f"train loss improved from {round(best_train, 5)} to {round(train_loss, 5)}"
                         + "\033[0m"
                     )
-                    best_train_loss = train_loss
+                    best_train = train_loss
 
                 if (epoch + 1) % self.args.val_every == 0:
                     self.eval()

@@ -24,6 +24,7 @@ def add_args(parser):
     parser.add_argument("--dist", action="store_true", help="start distributed training.")
     parser.add_argument("--seed", type=int, default=42, help="set experiment seed.")
     parser.add_argument("--rand_aug", action="store_true", help="start random augmentation.")
+    parser.add_argument("--augly_aug", action="store_true", help="use augly augmentation.")
     parser.add_argument(
         "--auto_aug",
         action="store_true",
@@ -31,7 +32,10 @@ def add_args(parser):
     )
     parser.add_argument("--img_size", type=int, default=256, help="set image size.")
     parser.add_argument(
-        "--rand_aug_n", type=int, default=4, help="set number of sequential random augs."
+        "--n_rand_aug", type=int, default=4, help="set number of sequential random augs."
+    )
+    parser.add_argument(
+        "--augly_aug_prob", type=float, default=0.2, help="augly augmentation probabilty."
     )
     parser.add_argument("--cut_len", type=int, default=128, help="cutout size.")
     parser.add_argument("--policy_num", type=int, default=1, help="auto augment policy number.")
@@ -72,14 +76,14 @@ def add_args(parser):
     )
     parser.add_argument("--q_size", type=int, default=65536, help="queue size.")
     parser.add_argument("--m", type=float, default=0.999, help="momentum update.")
-    parser.add_argument("--temp", type=float, default=0.07, help="contrastive loss temperature.")
-    parser.add_argument("--lr", type=float, default=1, help="sgd learning rate.")
+    parser.add_argument("--temp", type=float, default=0.2, help="contrastive loss temperature.")
+    parser.add_argument("--lr", type=float, default=0.15, help="sgd learning rate.")
     parser.add_argument("--momentum", type=float, default=0.9, help="sgd optimizer momentum.")
     parser.add_argument(
         "--weight_decay", type=float, default=1e-4, help="sgd optimizer weight decay."
     )
-    parser.add_argument("--epochs", type=int, default=1000, help="number of training epochs.")
-    parser.add_argument("--warmup_epochs", type=int, default=5, help="number of warmup epochs.")
+    parser.add_argument("--epochs", type=int, default=500, help="number of training epochs.")
+    parser.add_argument("--warmup_epochs", type=int, default=0, help="number of warmup epochs.")
     parser.add_argument("--resume", action="store_true", help="resume training from checkpoint.")
     parser.add_argument(
         "--loss_weights", type=list, default=[1, 1, 1], help="loss weights (down1, up1, down2)."
@@ -90,6 +94,7 @@ def add_args(parser):
         default="epoch",
         help="choose lr step mode, choose one of [epoch, step]",
     )
+    parser.add_argument("--val_every", type=int, default=50, help="validation frequency.")
     return parser
 
 

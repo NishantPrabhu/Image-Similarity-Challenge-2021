@@ -13,22 +13,19 @@ from augly.image import (
 
 
 class AuglyTransforms:
-    def __init__(self, n_aug):
+    def __init__(self):
         self.policies = [
             MemeFormat(),
-            OverlayImage(),
-            OverlayOntoBackgroundImage(),
             OverlayOntoScreenshot(),
             OverlayStripes(),
             OverlayText(),
             RandomEmojiOverlay(),
         ]
-        self.n_augs = n_aug
 
     def __call__(self, img):
-        aug_choices = random.choices(self.policies, k=self.n_aug)
-        for aug in aug_choices:
-            img = aug(img)
+        aug = random.choice(self.policies)
+        img = aug(img)
+        img = Image.fromarray(np.array(img)[:, :, 0:3])
         return img
 
 

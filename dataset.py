@@ -2,6 +2,7 @@ from torch.utils.data import Dataset
 from glob import glob
 import os
 import pandas as pd
+from PIL import Image
 
 
 class ISC(Dataset):
@@ -19,10 +20,12 @@ class ISC(Dataset):
             q_imgs = list(glob(os.path.join(root, self.TRAIN_DIR, "*.jpg")))
             k_imgs = q_imgs
         elif split == "query_val":
-            df = pd.read_csv(root, self.GT)
+            df = pd.read_csv(os.path.join(root, self.GT))
             df.dropna(subset=["reference_id"], inplace=True)
-            q_imgs = [os.path.join(root, self.QUERY_DIR, img) for img in df.iloc[:, 0]]
-            k_imgs = [os.path.join(root, self.REFERENCE_DIR, img) for img in df.iloc[:, 1]]
+            q_imgs = [os.path.join(root, self.QUERY_DIR, img + ".jpg") for img in df.iloc[:, 0]]
+            k_imgs = [
+                os.path.join(root, self.REFERENCE_DIR, img + ".jpg") for img in df.iloc[:, 1]
+            ]
         elif split == "query_all":
             q_imgs = list(glob(os.path.join(root, self.QUERY_DIR, "*.jpg")))
             k_imgs = q_imgs
@@ -36,6 +39,9 @@ class ISC(Dataset):
 
     def __getitem__(self, indx):
         q_img, k_img = self.data[indx]
+        q_img = Image.open(q_img).convert("RGB")
+        k_img = Image.open(k_img).convert("RGB")
+
         if self.q_transform is not None:
             q_img = self.q_transform(q_img)
         if self.k_transform is not None:
