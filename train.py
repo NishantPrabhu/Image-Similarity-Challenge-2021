@@ -14,6 +14,7 @@ import wandb
 import json
 from utils import pbar
 
+
 class Trainer:
     def __init__(self, args):
         if not torch.cuda.is_available():
@@ -36,13 +37,13 @@ class Trainer:
                 transforms.RandomHorizontalFlip(),
                 transforms.RandomResizedCrop(args.img_size, scale=(0.2, 1.0)),
                 augment.RandomAugment(args.rand_aug_n),
-                augment.Cutout(args.cut_len)
+                augment.Cutout(args.cut_len),
             ]
         elif args.auto_aug:
             t = [
                 transforms.RandomHorizontalFlip(),
                 transforms.RandomResizedCrop(args.img_size, scale=(0.2, 1.0)),
-                augment.Policy(args.policy_num, args.fill_color)
+                augment.Policy(args.policy_num, args.fill_color),
             ]
         else:
             t = [
@@ -59,33 +60,32 @@ class Trainer:
                     p=args.color_jitter_prob,
                 ),
                 transforms.RandomGrayscale(p=args.gray_prob),
-                transforms.RandomApply(
-                    [augment.GaussianBlur(args.blur_sigma)], p=args.blur_prob
-                ),
+                transforms.RandomApply([augment.GaussianBlur(args.blur_sigma)], p=args.blur_prob),
                 transforms.RandomHorizontalFlip(),
             ]
-        train_transform = transforms.Compose([
-            *t, 
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-        ])
-        val_transform = transforms.Compose([
-            transforms.Resize((args.img_size, args.img_size)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-        ])
+        train_transform = transforms.Compose(
+            [
+                *t,
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+            ]
+        )
+        val_transform = transforms.Compose(
+            [
+                transforms.Resize((args.img_size, args.img_size)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+            ]
+        )
 
         train_dset = dataset.ISC(
-            root=args.data_root, 
+            root=args.data_root,
             split="train",
             q_transform=train_transform,
-            k_transform=train_transform
+            k_transform=train_transform,
         )
         val_dset = dataset.ISC(
-            root=args.data_root, 
-            split="val",
-            q_transform=val_transform,
-            k_transform=val_transform
+            root=args.data_root, split="val", q_transform=val_transform, k_transform=val_transform
         )
         if args.dist:
             train_sampler = DistributedSampler(train_dset)
@@ -101,7 +101,7 @@ class Trainer:
                 batch_size=args.batch_size,
                 shuffle=True,
                 num_workers=args.n_workers,
-                drop_last=True
+                drop_last=True,
             )
 
         self.val_loader = DataLoader(
@@ -109,20 +109,14 @@ class Trainer:
             batch_size=args.batch_size,
             shuffle=False,
             num_workers=args.n_workers,
-            drop_last=True
+            drop_last=True,
         )
 
         model = network.Network(
-            type=args.type,
-            out_dim=args.out_dim,
-            proj_dim=args.proj_dim
+            type=args.type, skip=args.skip, out_dim=args.out_dim, proj_dim=args.proj_dim
         )
         self.model = network.UnsupervisedWrapper(
-            model=model,
-            proj_dim=args.proj_dim,
-            q_size=args.q_size,
-            m=args.m,
-            temp=args.temp
+            model=model, proj_dim=args.proj_dim, q_size=args.q_size, m=args.m, temp=args.temp
         )
         if args.dist:
             torch.set_num_threads(1)
@@ -135,7 +129,7 @@ class Trainer:
         else:
             self.model = self.model.to(self.device)
             self.main_thread = True
-        
+
         self.optim = torch.optim.SGD(
             self.model.parameters(),
             args.lr,
@@ -145,10 +139,8 @@ class Trainer:
         if self.args.lr_step_mode == "epoch":
             total_steps = args.epochs - args.warmup_epochs
         else:
-            total_steps = int((args.epochs - args.warmup_epochs)*len(self.train_loader))
-        self.lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.optim, total_steps
-        )
+            total_steps = int((args.epochs - args.warmup_epochs) * len(self.train_loader))
+        self.lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(self.optim, total_steps)
         self.cross_entropy = torch.nn.CrossEntropyLoss()
         self.mse_loss = torch.nn.MSELoss()
 
@@ -158,27 +150,22 @@ class Trainer:
             print(
                 f"Loaded {train_dset.__class__.__name__} dataset, train: {len(train_dset)}, val: {len(val_dset)}"
             )
-            print(
-                f"# of Model parameters: {sum(p.numel() for p in self.model.parameters())/1e6}M"
-            )
+            print(f"# of Model parameters: {sum(p.numel() for p in self.model.parameters())/1e6}M")
             if args.wandb:
                 self.log_wandb = True
                 run = wandb.init()
                 print(f"Started wandb logging @ {run.get_url()}")
-        
+
         if os.path.exists(os.path.join(self.out_dir, "last.ckpt")):
             if args.resume == False:
                 raise KeyError(
                     f"Directory {self.out_dir} already exists, change output directory or use --resume argument"
                 )
-            ckpt = torch.load(
-                os.path.join(self.out_dir, "last.ckpt"), map_location=self.device
-            )
+            ckpt = torch.load(os.path.join(self.out_dir, "last.ckpt"), map_location=self.device)
             model_dict = ckpt["model"]
             if "module" in list(model_dict.keys())[0] and args.dist == False:
                 model_dict = {
-                    key.replace("module.", ""): value
-                    for key, value in model_dict.items()
+                    key.replace("module.", ""): value for key, value in model_dict.items()
                 }
             self.model.load_state_dict(model_dict)
             self.optim.load_state_dict(ckpt["optim"])
@@ -200,25 +187,36 @@ class Trainer:
             if self.main_thread:
                 print(f"=> Starting fresh training expt for {args.epochs} epochs.")
         self.train_steps = self.start_epoch * len(self.train_loader)
-    
+
     def train_epoch(self):
         self.model.train()
         self.metric_meter.reset()
 
         for (indx, (img_q, img_k)) in enumerate(self.train_loader):
             img_q, img_k = img_q.to(self.device), img_k.to(self.device)
-            logit_mlp1, label_mlp1, logit_mlp2, label_mlp2, logit_dense1, label_dense1, logit_dense2, label_dense2, rec_q, rec_k = self.model(img_q, img_k, self.args.dist)
+            (
+                logit_mlp1,
+                label_mlp1,
+                logit_mlp2,
+                label_mlp2,
+                logit_dense1,
+                label_dense1,
+                logit_dense2,
+                label_dense2,
+                rec_q,
+                rec_k,
+            ) = self.model(img_q, img_k, self.args.dist)
 
             mlp1_loss = self.cross_entropy(logit_mlp1, label_mlp1)
             mlp2_loss = self.cross_entropy(logit_mlp2, label_mlp2)
             dense1_loss = self.cross_entropy(logit_dense1, label_dense1)
             dense2_loss = self.cross_entropy(logit_dense2, label_dense2)
             rec_loss = self.mse_loss(rec_q, rec_k)
-            down1_loss = (mlp1_loss+dense1_loss)/2
-            down2_loss = (mlp2_loss+dense2_loss)/2
+            down1_loss = (mlp1_loss + dense1_loss) / 2
+            down2_loss = (mlp2_loss + dense2_loss) / 2
 
             w1, w2, w3 = self.args.loss_weights
-            loss = w1*down1_loss + w2*rec_loss + w3*down2_loss
+            loss = w1 * down1_loss + w2 * rec_loss + w3 * down2_loss
             self.optim.zero_grad()
             loss.backward()
             self.optim.step()
@@ -240,18 +238,22 @@ class Trainer:
                     metrics["train step"] = self.train_steps
                     wandb.log(metrics)
                 pbar(indx / len(self.train_loader), msg=self.metric_meter.msg())
-            
+
             if self.args.lr_step_mode == "step":
-                if self.train_steps <= self.args.warmup_epochs*len(self.train_loader):
-                    self.optim.param_groups[0]["lr"] = self.train_steps / (self.args.warmup_epochs*len(self.train_loader)) * self.args.lr
+                if self.train_steps <= self.args.warmup_epochs * len(self.train_loader):
+                    self.optim.param_groups[0]["lr"] = (
+                        self.train_steps
+                        / (self.args.warmup_epochs * len(self.train_loader))
+                        * self.args.lr
+                    )
                 else:
                     self.lr_sched.step()
-                
+
             self.train_steps += 1
 
         if self.main_thread:
             pbar(1, msg=self.metric_meter.msg())
-    
+
     @torch.no_grad()
     def eval(self):
         self.model.eval()
@@ -259,18 +261,29 @@ class Trainer:
 
         for (indx, (img_q, img_k)) in enumerate(self.val_loader):
             img_q, img_k = img_q.to(self.device), img_k.to(self.device)
-            logit_mlp1, label_mlp1, logit_mlp2, label_mlp2, logit_dense1, label_dense1, logit_dense2, label_dense2, rec_q, rec_k = self.model(img_q, img_k, self.args.dist)
+            (
+                logit_mlp1,
+                label_mlp1,
+                logit_mlp2,
+                label_mlp2,
+                logit_dense1,
+                label_dense1,
+                logit_dense2,
+                label_dense2,
+                rec_q,
+                rec_k,
+            ) = self.model(img_q, img_k, self.args.dist)
 
             mlp1_loss = self.cross_entropy(logit_mlp1, label_mlp1)
             mlp2_loss = self.cross_entropy(logit_mlp2, label_mlp2)
             dense1_loss = self.cross_entropy(logit_dense1, label_dense1)
             dense2_loss = self.cross_entropy(logit_dense2, label_dense2)
             rec_loss = self.mse_loss(rec_q, rec_k)
-            down1_loss = (mlp1_loss+dense1_loss)/2
-            down2_loss = (mlp2_loss+dense2_loss)/2
+            down1_loss = (mlp1_loss + dense1_loss) / 2
+            down2_loss = (mlp2_loss + dense2_loss) / 2
 
             w1, w2, w3 = self.args.loss_weights
-            loss = w1*down1_loss + w2*rec_loss + w3*down2_loss
+            loss = w1 * down1_loss + w2 * rec_loss + w3 * down2_loss
 
             metrics = {
                 "val total loss": loss.item(),
@@ -286,7 +299,7 @@ class Trainer:
 
             if self.main_thread:
                 pbar(indx / len(self.val_loader), msg=self.metric_meter.msg())
-            
+
         if self.main_thread:
             pbar(1, msg=self.metric_meter.msg())
 
@@ -356,9 +369,12 @@ class Trainer:
 
             if self.args.lr_step_mode == "epoch":
                 if epoch <= self.args.warmup_epochs:
-                    self.optim.param_groups[0]["lr"] = epoch / self.args.warmup_epochs * self.args.lr
+                    self.optim.param_groups[0]["lr"] = (
+                        epoch / self.args.warmup_epochs * self.args.lr
+                    )
                 else:
                     self.lr_sched.step()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
