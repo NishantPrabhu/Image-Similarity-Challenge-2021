@@ -29,11 +29,7 @@ class BasicBlock(nn.Module):
 
     def __init__(self, in_planes, planes, stride=1, down=True, skip=False):
         super(BasicBlock, self).__init__()
-        if down:
-            self.conv1 = nn.Conv2d(
-                in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False
-            )
-        else:
+        if down == False and stride != 1:
             self.conv1 = nn.Sequential(
                 nn.Upsample(scale_factor=stride, mode="bilinear", align_corners=True),
                 nn.Conv2d(in_planes, planes, kernel_size=3, stride=1, padding=1, bias=False),
@@ -42,6 +38,10 @@ class BasicBlock(nn.Module):
                 self.gate = Skip(planes)
             else:
                 self.gate = Swish()
+        else:
+            self.conv1 = nn.Conv2d(
+                in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False
+            )
         self.bn1 = nn.BatchNorm2d(planes)
         self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(planes)
@@ -93,11 +93,7 @@ class Bottleneck(nn.Module):
         super(Bottleneck, self).__init__()
         self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=1, bias=False)
         self.bn1 = nn.BatchNorm2d(planes)
-        if down:
-            self.conv2 = nn.Conv2d(
-                planes, planes, kernel_size=3, stride=stride, padding=1, bias=False
-            )
-        else:
+        if down == False and stride != 1:
             self.conv2 = nn.Sequential(
                 nn.Upsample(scale_factor=stride, mode="bilinear", align_corners=True),
                 nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False),
@@ -106,6 +102,10 @@ class Bottleneck(nn.Module):
                 self.gate = Skip(planes)
             else:
                 self.gate = Swish()
+        else:
+            self.conv2 = nn.Conv2d(
+                planes, planes, kernel_size=3, stride=stride, padding=1, bias=False
+            )
         self.bn2 = nn.BatchNorm2d(planes)
         self.conv3 = nn.Conv2d(planes, self.expansion * planes, kernel_size=1, bias=False)
         self.bn3 = nn.BatchNorm2d(int(self.expansion * planes))
@@ -135,7 +135,6 @@ class Bottleneck(nn.Module):
                     ),
                     nn.BatchNorm2d(int(self.expansion * planes)),
                 )
-        self.swish = Swish()
 
     def forward(self, x):
         if isinstance(x, list):
@@ -256,7 +255,18 @@ class FPN(nn.Module):
         p3 = self.output1(p3)
         p2 = self.output2(p2)
         p1 = self.output3(p1)
-        return p3, p2, p1
+
+        _, _, out_h, out_w = p1.shape
+        out = [p3, p2, p1]
+        out = [
+            F.interpolate(o, size=(out_h, out_w))
+            if (out_w != o.shape[3]) or (out_h != o.shape[2])
+            else o
+            for o in out
+        ]
+        out = torch.cat([out.unsqueeze(-1) for out in out], dim=-1)
+        out = (out * F.softmax(out, dim=-1)).sum(dim=-1)
+        return out
 
 
 def proj_init_weights(m):
@@ -338,12 +348,10 @@ class Network(nn.Module):
         outputs.append(out[-1])
 
         out = self.down2(out)
-        dense_fv2 = self.down2_dense(out[-1])
-        x = torch.flatten(self.avg_pool(out[-1]), 1)
+        dense_fv2 = self.down2_dense(out)
+        x = torch.flatten(self.avg_pool(out), 1)
         mlp_fv2 = self.down2_mlp(x)
-        outputs.extend(
-            [F.normalize(out[-1].view(out[-1].shape[0], out[-1].shape[1], -1)), dense_fv2, mlp_fv2]
-        )
+        outputs.extend([F.normalize(out.view(out.shape[0], out.shape[1], -1)), dense_fv2, mlp_fv2])
 
         return outputs
 
