@@ -254,7 +254,7 @@ class Trainer:
                 pbar(indx / len(self.train_loader), msg=self.metric_meter.msg())
 
             if self.args.lr_step_mode == "step":
-                if self.train_steps <= self.args.warmup_epochs * len(self.train_loader):
+                if self.train_steps < self.args.warmup_epochs * len(self.train_loader):
                     self.optim.param_groups[0]["lr"] = (
                         self.train_steps
                         / (self.args.warmup_epochs * len(self.train_loader))
@@ -353,6 +353,8 @@ class Trainer:
                         )
 
                     if self.log_wandb:
+                        train_metrics = {"epoch " + key: value for key, value in train_metrics.items()}
+                        val_metrics = {"epoch " + key: value for key, value in val_metrics.items()}
                         wandb.log(
                             {
                                 "epoch": epoch,
@@ -363,6 +365,7 @@ class Trainer:
                         )
                 else:
                     if self.log_wandb:
+                        train_metrics = {"epoch " + key: value for key, value in train_metrics.items()}
                         wandb.log(
                             {
                                 "epoch": epoch,
@@ -381,7 +384,7 @@ class Trainer:
                 )
 
             if self.args.lr_step_mode == "epoch":
-                if epoch <= self.args.warmup_epochs:
+                if epoch < self.args.warmup_epochs:
                     self.optim.param_groups[0]["lr"] = (
                         epoch / self.args.warmup_epochs * self.args.lr
                     )
