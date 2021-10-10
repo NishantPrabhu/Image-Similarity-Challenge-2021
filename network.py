@@ -2,15 +2,45 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import copy
+from torchvision import models
+
+
+class DownResNet(nn.Module):
+    BACKBONES = {
+        "resnet18": (models.resnet18, [64, 128, 256, 512]),
+        "resnet34": (models.resnet34, [64, 128, 256, 512]),
+        "resnet50": (models.resnet50, [256, 512, 1024, 2048]),
+        "resnet101": (models.resnet101, [256, 512, 1024, 2048]),
+    }
+
+    def __init__(self, type="resnet18"):
+        super(DownResNet, self).__init__()
+        pretrained, self.channels = self.BACKBONES[type]
+        pretrained = pretrained(pretrained=True)
+        pretrained = list(pretrained.children())
+
+        self.pre_conv = nn.Sequential(*pretrained[0:4])
+        self.layer1 = pretrained[4]
+        self.layer2 = pretrained[5]
+        self.layer3 = pretrained[6]
+        self.layer4 = pretrained[7]
+
+    def forward(self, x):
+        x = self.pre_conv(x)
+        out1 = self.layer1(x)
+        out2 = self.layer2(out1)
+        out3 = self.layer3(out2)
+        out4 = self.layer4(out3)
+        return [out1, out2, out3, out4]
 
 
 class Swish(nn.Module):
     def __init__(self):
         super(Swish, self).__init__()
-        self.weight = nn.Parameter(torch.tensor([1.0]))
+        self.w = nn.Parameter(torch.tensor([1.0]))
 
-    def forward(self, input1, input2):
-        return input1 * torch.sigmoid(self.weight * input2)
+    def forward(self, inp1, inp2):
+        return inp1 * torch.sigmoid(self.w * inp2)
 
 
 class Skip(nn.Module):
@@ -18,67 +48,50 @@ class Skip(nn.Module):
         super(Skip, self).__init__()
         self.conv1x1 = nn.Conv2d(dim * 2, dim, 1)
 
-    def forward(self, input1, input2):
-        x = torch.cat([input1, input2], dim=1)
+    def forward(self, inp1, inp2):
+        x = torch.cat([inp1, inp2], dim=1)
         x = self.conv1x1(x)
         return x
 
 
-class BasicBlock(nn.Module):
+class UpBasicBlock(nn.Module):
     expansion = 1
 
-    def __init__(self, in_planes, planes, stride=1, down=True, skip=False):
-        super(BasicBlock, self).__init__()
-        if down == False and stride != 1:
+    def __init__(self, in_planes, planes, up_factor=1, skip=False):
+        super(UpBasicBlock, self).__init__()
+        if up_factor == 1:
+            self.conv1 = nn.Conv2d(
+                in_planes, planes, kernel_size=3, stride=1, padding=1, bias=False
+            )
+            self.gate = None
+        else:
             self.conv1 = nn.Sequential(
-                nn.Upsample(scale_factor=stride, mode="bilinear", align_corners=True),
+                nn.Upsample(scale_factor=up_factor, mode="bilinear", align_corners=True),
                 nn.Conv2d(in_planes, planes, kernel_size=3, stride=1, padding=1, bias=False),
             )
             if skip:
                 self.gate = Skip(planes)
             else:
                 self.gate = Swish()
-        else:
-            self.conv1 = nn.Conv2d(
-                in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False
-            )
         self.bn1 = nn.BatchNorm2d(planes)
         self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(planes)
 
         self.shortcut = nn.Sequential()
-        if stride != 1 or in_planes != int(self.expansion * planes):
-            if down:
-                self.shortcut = nn.Sequential(
-                    nn.Conv2d(
-                        in_planes,
-                        int(self.expansion * planes),
-                        kernel_size=1,
-                        stride=stride,
-                        bias=False,
-                    ),
-                    nn.BatchNorm2d(int(self.expansion * planes)),
-                )
-            else:
-                self.shortcut = nn.Sequential(
-                    nn.Upsample(scale_factor=stride, mode="bilinear", align_corners=True),
-                    nn.Conv2d(
-                        in_planes,
-                        int(self.expansion * planes),
-                        kernel_size=1,
-                        stride=1,
-                        bias=False,
-                    ),
-                    nn.BatchNorm2d(int(self.expansion * planes)),
-                )
+        if up_factor != 1 or in_planes != int(self.expansion * planes):
+            self.shortcut = nn.Sequential(
+                nn.Upsample(scale_factor=up_factor, mode="bilinear", align_corners=True),
+                nn.Conv2d(
+                    in_planes, int(self.expansion * planes), kernel_size=1, stride=1, bias=False
+                ),
+                nn.BatchNorm2d(int(self.expansion * planes)),
+            )
 
     def forward(self, x):
-        if isinstance(x, list):
+        if self.gate is not None:
             x, gate = x
-        else:
-            gate = None
         out = F.relu(self.bn1(self.conv1(x)))
-        if gate is not None:
+        if self.gate is not None:
             out = self.gate(out, gate)
         out = self.bn2(self.conv2(out))
         out += self.shortcut(x)
@@ -86,64 +99,45 @@ class BasicBlock(nn.Module):
         return out
 
 
-class Bottleneck(nn.Module):
+class UpBottleneck(nn.Module):
     expansion = 4
 
-    def __init__(self, in_planes, planes, stride=1, down=True, skip=False):
-        super(Bottleneck, self).__init__()
+    def __init__(self, in_planes, planes, up_factor=1, skip=False):
+        super(UpBottleneck, self).__init__()
         self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=1, bias=False)
         self.bn1 = nn.BatchNorm2d(planes)
-        if down == False and stride != 1:
+        if up_factor == 1:
+            self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
+            self.gate = None
+        else:
             self.conv2 = nn.Sequential(
-                nn.Upsample(scale_factor=stride, mode="bilinear", align_corners=True),
+                nn.Upsample(scale_factor=up_factor, mode="bilinear", align_corners=True),
                 nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False),
             )
             if skip:
                 self.gate = Skip(planes)
             else:
                 self.gate = Swish()
-        else:
-            self.conv2 = nn.Conv2d(
-                planes, planes, kernel_size=3, stride=stride, padding=1, bias=False
-            )
         self.bn2 = nn.BatchNorm2d(planes)
         self.conv3 = nn.Conv2d(planes, self.expansion * planes, kernel_size=1, bias=False)
         self.bn3 = nn.BatchNorm2d(int(self.expansion * planes))
 
         self.shortcut = nn.Sequential()
-        if stride != 1 or in_planes != self.expansion * planes:
-            if down:
-                self.shortcut = nn.Sequential(
-                    nn.Conv2d(
-                        in_planes,
-                        int(self.expansion * planes),
-                        kernel_size=1,
-                        stride=stride,
-                        bias=False,
-                    ),
-                    nn.BatchNorm2d(int(self.expansion * planes)),
-                )
-            else:
-                self.shortcut = nn.Sequential(
-                    nn.Upsample(scale_factor=stride, mode="bilinear", align_corners=True),
-                    nn.Conv2d(
-                        in_planes,
-                        int(self.expansion * planes),
-                        kernel_size=1,
-                        stride=1,
-                        bias=False,
-                    ),
-                    nn.BatchNorm2d(int(self.expansion * planes)),
-                )
+        if up_factor != 1 or in_planes != int(self.expansion * planes):
+            self.shortcut = nn.Sequential(
+                nn.Upsample(scale_factor=up_factor, mode="bilinear", align_corners=True),
+                nn.Conv2d(
+                    in_planes, int(self.expansion * planes), kernel_size=1, stride=1, bias=False
+                ),
+                nn.BatchNorm2d(int(self.expansion * planes)),
+            )
 
     def forward(self, x):
-        if isinstance(x, list):
+        if self.gate is not None:
             x, gate = x
-        else:
-            gate = None
         out = F.relu(self.bn1(self.conv1(x)))
         out = F.relu(self.bn2(self.conv2(out)))
-        if gate is not None:
+        if self.gate is not None:
             out = self.gate(out, gate)
         out = self.bn3(self.conv3(out))
         out += self.shortcut(x)
@@ -151,63 +145,39 @@ class Bottleneck(nn.Module):
         return out
 
 
-class DownResNet(nn.Module):
-    def __init__(self, block, num_blocks, in_dim=64):
-        super(DownResNet, self).__init__()
-        self.in_planes = in_dim
-        self.channels = [int(in_dim * 2 ** f * block.expansion) for f in range(4)]
-
-        self.conv1 = nn.Conv2d(3, in_dim, kernel_size=7, stride=2, padding=3, bias=False)
-        self.bn1 = nn.BatchNorm2d(in_dim)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-
-        self.layer1 = self._make_layer(block, self.channels[0], num_blocks[0], stride=1)
-        self.layer2 = self._make_layer(block, self.channels[1], num_blocks[1], stride=2)
-        self.layer3 = self._make_layer(block, self.channels[2], num_blocks[2], stride=2)
-        self.layer4 = self._make_layer(block, self.channels[3], num_blocks[3], stride=2)
-
-    def _make_layer(self, block, planes, num_blocks, stride=1, down=True):
-        strides = [stride] + [1] * (num_blocks - 1)
-        layers = []
-        for stride in strides:
-            layers.append(block(self.in_planes, planes, stride, down))
-            self.in_planes = planes * block.expansion
-        return nn.Sequential(*layers)
-
-    def forward(self, x):
-        out = self.maxpool(F.relu(self.bn1(self.conv1(x))))
-        out1 = self.layer1(out)
-        out2 = self.layer2(out1)
-        out3 = self.layer3(out2)
-        out4 = self.layer4(out3)
-        return [out1, out2, out3, out4]
-
-
 class UpResNet(nn.Module):
-    def __init__(self, block, num_blocks, skip=False, in_dim=512):
+    BACKBONES = {
+        "resnet18": (UpBasicBlock, [2, 2, 2, 2]),
+        "resnet34": (UpBasicBlock, [3, 4, 6, 3]),
+        "resnet50": (UpBottleneck, [3, 4, 6, 3]),
+        "resnet101": (UpBottleneck, [3, 4, 23, 3]),
+    }
+
+    def __init__(self, type="resnet18", skip=False):
         super(UpResNet, self).__init__()
-        self.in_planes = in_dim
-        self.channels = [int(in_dim * 0.5 ** f * block.expansion) for f in range(4)]
+        block, num_blocks = self.BACKBONES[type]
+        self.in_planes = 512
+        self.channels = [int(512 * 0.5 ** f * block.expansion) for f in range(4)]
 
         block.expansion = 1 / block.expansion
         self.layer1 = self._make_layer(
-            block, self.channels[0], num_blocks[0], stride=2, down=False, skip=skip
+            block, self.channels[0], num_blocks[0], up_factor=2, skip=skip
         )
         self.layer2 = self._make_layer(
-            block, self.channels[1], num_blocks[1], stride=2, down=False, skip=skip
+            block, self.channels[1], num_blocks[1], up_factor=2, skip=skip
         )
         self.layer3 = self._make_layer(
-            block, self.channels[2], num_blocks[2], stride=2, down=False, skip=skip
+            block, self.channels[2], num_blocks[2], up_factor=2, skip=skip
         )
         self.layer4 = self._make_layer(
-            block, self.channels[3], num_blocks[3], stride=2, down=False, skip=skip
+            block, self.channels[3], num_blocks[3], up_factor=2, skip=skip
         )
 
-    def _make_layer(self, block, planes, num_blocks, stride=1, down=True, skip=False):
-        strides = [stride] + [1] * (num_blocks - 1)
+    def _make_layer(self, block, planes, num_blocks, up_factor=1, skip=False):
+        up_factors = [up_factor] + [1] * (num_blocks - 1)
         layers = []
-        for stride in strides:
-            layers.append(block(self.in_planes, planes, stride, down, skip))
+        for up_factor in up_factors:
+            layers.append(block(self.in_planes, planes, up_factor, skip))
             self.in_planes = int(planes * block.expansion)
         return nn.Sequential(*layers)
 
@@ -306,13 +276,9 @@ class ProjectionHead(nn.Module):
 
 
 class Network(nn.Module):
-    TYPE = {"resnet18": (BasicBlock, [2, 2, 2, 2])}
-
-    def __init__(self, in_dim=64, type="resnet18", skip=False, out_dim=256, proj_dim=256):
+    def __init__(self, type="resnet18", skip=False, out_dim=256, proj_dim=256):
         super().__init__()
-        block, num_blocks = self.TYPE[type]
-
-        self.down1 = DownResNet(block, num_blocks, in_dim)
+        self.down1 = DownResNet(type)
         self.down1_mlp = ProjectionHead("mlp", self.down1.channels[-1], proj_dim)
         self.down1_dense = ProjectionHead("dense", self.down1.channels[-1], proj_dim)
         self.avg_pool = nn.AdaptiveAvgPool2d((1, 1))
@@ -323,7 +289,7 @@ class Network(nn.Module):
             nn.Linear(self.down1.channels[-1], 16 * self.down1.channels[-1]),
         )
 
-        self.up1 = UpResNet(block, num_blocks, skip, self.down1.channels[-1])
+        self.up1 = UpResNet(type, skip)
 
         self.down2 = FPN(self.up1.channels, out_dim)
         self.down2_mlp = ProjectionHead("mlp", out_dim, proj_dim)
@@ -351,7 +317,9 @@ class Network(nn.Module):
         dense_fv2 = self.down2_dense(out)
         x = torch.flatten(self.avg_pool(out), 1)
         mlp_fv2 = self.down2_mlp(x)
-        outputs.extend([F.normalize(out.view(out.shape[0], out.shape[1], -1)), dense_fv2, mlp_fv2])
+        outputs.extend(
+            [F.normalize(out.view(out.shape[0], out.shape[1], -1), p=2, dim=1), dense_fv2, mlp_fv2]
+        )
 
         return outputs
 
@@ -560,7 +528,7 @@ class UnsupervisedWrapper(nn.Module):
 if __name__ == "__main__":
     a = torch.randn(2, 3, 256, 256).cuda()
     b = torch.randn(2, 3, 256, 256).cuda()
-    net = Network(in_dim=32)
+    net = Network()
     net = UnsupervisedWrapper(net).cuda()
     out = net(a, b)
     print([o.shape for o in out])

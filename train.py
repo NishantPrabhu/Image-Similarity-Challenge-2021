@@ -45,6 +45,12 @@ class Trainer:
                 transforms.RandomResizedCrop(args.img_size, scale=(0.2, 1.0)),
                 augment.Policy(args.policy_num, args.fill_color),
             ]
+        elif args.custom_aug:
+            t = [
+                augment.ToNumpy(),
+                augment.CustomAugment.augment_image,
+                transforms.ToPILImage(),
+            ]
         else:
             t = [
                 transforms.RandomResizedCrop(args.img_size, scale=(0.2, 1.0)),
@@ -69,14 +75,14 @@ class Trainer:
             [
                 *t,
                 transforms.ToTensor(),
-                transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+                # transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
             ]
         )
         val_transform = transforms.Compose(
             [
                 transforms.Resize((args.img_size, args.img_size)),
                 transforms.ToTensor(),
-                transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+                # transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
             ]
         )
 
@@ -119,7 +125,6 @@ class Trainer:
 
         model = network.Network(
             type=args.type,
-            in_dim=args.in_dim,
             skip=args.skip,
             out_dim=args.out_dim,
             proj_dim=args.proj_dim,

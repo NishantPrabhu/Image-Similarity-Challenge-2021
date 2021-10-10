@@ -25,6 +25,7 @@ def add_args(parser):
     parser.add_argument("--seed", type=int, default=42, help="set experiment seed.")
     parser.add_argument("--rand_aug", action="store_true", help="start random augmentation.")
     parser.add_argument("--augly_aug", action="store_true", help="use augly augmentation.")
+    parser.add_argument("--custom_aug", action="store_true", help="use custom augmentation.")
     parser.add_argument(
         "--auto_aug",
         action="store_true",
@@ -60,7 +61,6 @@ def add_args(parser):
         "--n_workers", type=int, default=4, help="number of workers for dataloading."
     )
     parser.add_argument("--type", type=str, default="resnet18", help="network backbone type.")
-    parser.add_argument("--in_dim", type=int, default=64, help="initial feature vector dimension.")
     parser.add_argument(
         "--skip",
         type=bool,
@@ -76,8 +76,8 @@ def add_args(parser):
     )
     parser.add_argument("--q_size", type=int, default=65536, help="queue size.")
     parser.add_argument("--m", type=float, default=0.999, help="momentum update.")
-    parser.add_argument("--temp", type=float, default=0.2, help="contrastive loss temperature.")
-    parser.add_argument("--lr", type=float, default=0.15, help="sgd learning rate.")
+    parser.add_argument("--temp", type=float, default=0.07, help="contrastive loss temperature.")
+    parser.add_argument("--lr", type=float, default=0.3, help="sgd learning rate.")
     parser.add_argument("--momentum", type=float, default=0.9, help="sgd optimizer momentum.")
     parser.add_argument(
         "--weight_decay", type=float, default=1e-4, help="sgd optimizer weight decay."
@@ -94,7 +94,7 @@ def add_args(parser):
         default="epoch",
         help="choose lr step mode, choose one of [epoch, step]",
     )
-    parser.add_argument("--val_every", type=int, default=50, help="validation frequency.")
+    parser.add_argument("--val_every", type=int, default=20, help="validation frequency.")
     return parser
 
 
