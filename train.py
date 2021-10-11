@@ -47,6 +47,7 @@ class Trainer:
             ]
         elif args.custom_aug:
             t = [
+                transforms.Resize((args.img_size, args.img_size)),
                 augment.ToNumpy(),
                 augment.CustomAugment.augment_image,
                 transforms.ToPILImage(),
