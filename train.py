@@ -2,7 +2,7 @@ import argparse
 import torch
 import random
 import numpy as np
-import utils
+import helpers
 import augment
 from torchvision import transforms
 import dataset
@@ -12,7 +12,7 @@ import os
 from torch.nn.parallel import DistributedDataParallel
 import wandb
 import json
-from utils import pbar
+from helpers import pbar
 
 
 class Trainer:
@@ -29,7 +29,7 @@ class Trainer:
         torch.cuda.manual_seed(args.seed)
         torch.cuda.manual_seed_all(args.seed)
 
-        self.device, local_rank = utils.setup_device(args.dist)
+        self.device, local_rank = helpers.setup_device(args.dist)
         print(f"Setting up device: {self.device}")
 
         if args.rand_aug:
@@ -125,10 +125,7 @@ class Trainer:
         )
 
         model = network.Network(
-            type=args.type,
-            skip=args.skip,
-            out_dim=args.out_dim,
-            proj_dim=args.proj_dim,
+            type=args.type
         )
         self.model = network.UnsupervisedWrapper(
             model=model, proj_dim=args.proj_dim, q_size=args.q_size, m=args.m, temp=args.temp
@@ -145,22 +142,24 @@ class Trainer:
             self.model = self.model.to(self.device)
             self.main_thread = True
 
-        self.optim = torch.optim.SGD(
+        self.optim = torch.optim.AdamW(
             self.model.parameters(),
             args.lr,
-            momentum=args.momentum,
             weight_decay=args.weight_decay,
         )
         if self.args.lr_step_mode == "epoch":
             total_steps = args.epochs - args.warmup_epochs
         else:
             total_steps = int((args.epochs - args.warmup_epochs) * len(self.train_loader))
+        if args.warmup_epochs > 0:
+            for group in self.optim.param_groups:
+                group["lr"] = 1e-12 / args.warmup_epochs * group["lr"]
         self.lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(self.optim, total_steps)
         self.cross_entropy = torch.nn.CrossEntropyLoss()
         self.mse_loss = torch.nn.MSELoss()
 
         self.log_wandb = False
-        self.metric_meter = utils.AvgMeter()
+        self.metric_meter = helpers.AvgMeter()
         if self.main_thread:
             print(
                 f"Loaded {train_dset.__class__.__name__} dataset, train: {len(train_dset)}, val: {len(val_dset)}"
@@ -371,6 +370,7 @@ class Trainer:
                             {
                                 "epoch": epoch,
                                 **train_metrics,
+                                "lr": self.optim.param_groups[0]["lr"],
                             }
                         )
 
@@ -395,10 +395,10 @@ class Trainer:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser = utils.add_args(parser)
+    parser = helpers.add_args(parser)
     args = parser.parse_args()
 
-    utils.print_args(args)
+    helpers.print_args(args)
 
     trainer = Trainer(args)
     trainer.run()

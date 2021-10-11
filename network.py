@@ -1,327 +1,164 @@
-import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import copy
-from torchvision import models
+import torch
+import math
+from copy import deepcopy
 
-
-class DownResNet(nn.Module):
-    BACKBONES = {
-        "resnet18": (models.resnet18, [64, 128, 256, 512]),
-        "resnet34": (models.resnet34, [64, 128, 256, 512]),
-        "resnet50": (models.resnet50, [256, 512, 1024, 2048]),
-        "resnet101": (models.resnet101, [256, 512, 1024, 2048]),
-    }
-
-    def __init__(self, type="resnet18"):
-        super(DownResNet, self).__init__()
-        pretrained, self.channels = self.BACKBONES[type]
-        pretrained = pretrained(pretrained=True)
-        pretrained = list(pretrained.children())
-
-        self.pre_conv = nn.Sequential(*pretrained[0:4])
-        self.layer1 = pretrained[4]
-        self.layer2 = pretrained[5]
-        self.layer3 = pretrained[6]
-        self.layer4 = pretrained[7]
-
-    def forward(self, x):
-        x = self.pre_conv(x)
-        out1 = self.layer1(x)
-        out2 = self.layer2(out1)
-        out3 = self.layer3(out2)
-        out4 = self.layer4(out3)
-        return [out1, out2, out3, out4]
-
-
-class Swish(nn.Module):
-    def __init__(self):
-        super(Swish, self).__init__()
-        self.w = nn.Parameter(torch.tensor([1.0]))
-
-    def forward(self, inp1, inp2):
-        return inp1 * torch.sigmoid(self.w * inp2)
-
-
-class Skip(nn.Module):
-    def __init__(self, dim):
-        super(Skip, self).__init__()
-        self.conv1x1 = nn.Conv2d(dim * 2, dim, 1)
-
-    def forward(self, inp1, inp2):
-        x = torch.cat([inp1, inp2], dim=1)
-        x = self.conv1x1(x)
-        return x
-
-
-class UpBasicBlock(nn.Module):
-    expansion = 1
-
-    def __init__(self, in_planes, planes, up_factor=1, skip=False):
-        super(UpBasicBlock, self).__init__()
-        if up_factor == 1:
-            self.conv1 = nn.Conv2d(
-                in_planes, planes, kernel_size=3, stride=1, padding=1, bias=False
-            )
-            self.gate = None
+class Scale(nn.Module):
+    def __init__(self, mode="down"):
+        super(Scale, self).__init__()
+        if mode == "down":
+            self.scale = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         else:
-            self.conv1 = nn.Sequential(
-                nn.Upsample(scale_factor=up_factor, mode="bilinear", align_corners=True),
-                nn.Conv2d(in_planes, planes, kernel_size=3, stride=1, padding=1, bias=False),
-            )
-            if skip:
-                self.gate = Skip(planes)
-            else:
-                self.gate = Swish()
-        self.bn1 = nn.BatchNorm2d(planes)
-        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(planes)
-
-        self.shortcut = nn.Sequential()
-        if up_factor != 1 or in_planes != int(self.expansion * planes):
-            self.shortcut = nn.Sequential(
-                nn.Upsample(scale_factor=up_factor, mode="bilinear", align_corners=True),
-                nn.Conv2d(
-                    in_planes, int(self.expansion * planes), kernel_size=1, stride=1, bias=False
-                ),
-                nn.BatchNorm2d(int(self.expansion * planes)),
-            )
+            self.scale = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
 
     def forward(self, x):
-        if self.gate is not None:
-            x, gate = x
-        out = F.relu(self.bn1(self.conv1(x)))
-        if self.gate is not None:
-            out = self.gate(out, gate)
-        out = self.bn2(self.conv2(out))
-        out += self.shortcut(x)
-        out = F.relu(out)
-        return out
+        cls_token = x[:, [0]]
+        rem_tokens = x[:, 1:]
+        s = int(rem_tokens.shape[1]**0.5)
+        rem_tokens = rem_tokens.view(rem_tokens.shape[0], s, s, rem_tokens.shape[-1])
+        rem_tokens = rem_tokens.permute(0, 3, 1, 2)
+        rem_tokens = self.scale(rem_tokens)
+        rem_tokens = rem_tokens.view(rem_tokens.shape[0], rem_tokens.shape[1], -1)
+        rem_tokens = rem_tokens.permute(0, 2, 1)
+        return torch.cat((cls_token, rem_tokens), dim=1)
 
+class Network(nn.Module):
+    TYPES = [
+        "vits16",
+        "vits8",
+        "vitb16",
+        "vitb8",
+    ]
+    def __init__(self, type="vits8"):
+        super(Network, self).__init__()
+        assert type in self.TYPES
+        pretrained = torch.hub.load("facebookresearch/dino:main", f"dino_{type}")
 
-class UpBottleneck(nn.Module):
-    expansion = 4
+        self.patch_embed = pretrained.patch_embed
+        self.cls_token = pretrained.cls_token
+        self.pos_embed = pretrained.pos_embed
+        self.pos_drop = pretrained.pos_drop
+        self.embed_dim = self.cls_token.shape[-1]
 
-    def __init__(self, in_planes, planes, up_factor=1, skip=False):
-        super(UpBottleneck, self).__init__()
-        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(planes)
-        if up_factor == 1:
-            self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
-            self.gate = None
-        else:
-            self.conv2 = nn.Sequential(
-                nn.Upsample(scale_factor=up_factor, mode="bilinear", align_corners=True),
-                nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False),
-            )
-            if skip:
-                self.gate = Skip(planes)
-            else:
-                self.gate = Swish()
-        self.bn2 = nn.BatchNorm2d(planes)
-        self.conv3 = nn.Conv2d(planes, self.expansion * planes, kernel_size=1, bias=False)
-        self.bn3 = nn.BatchNorm2d(int(self.expansion * planes))
+        blocks = list(pretrained.blocks.children())
 
-        self.shortcut = nn.Sequential()
-        if up_factor != 1 or in_planes != int(self.expansion * planes):
-            self.shortcut = nn.Sequential(
-                nn.Upsample(scale_factor=up_factor, mode="bilinear", align_corners=True),
-                nn.Conv2d(
-                    in_planes, int(self.expansion * planes), kernel_size=1, stride=1, bias=False
-                ),
-                nn.BatchNorm2d(int(self.expansion * planes)),
-            )
+        self.block1 = blocks[0]
+        self.block2 = blocks[1]
+        self.block3 = blocks[2]
+        self.block4 = blocks[3]
+        self.block5 = blocks[4]
+        self.block6 = blocks[5]
+        self.block7 = blocks[6]
+        self.block8 = blocks[7]
+        self.block9 = blocks[8]
+        self.block10 = blocks[9]
+        self.block11 = blocks[10]
+        self.block12 = blocks[11]
+
+        self.down = Scale(mode="down")
+        self.up = Scale(mode="up")
+
+    def interpolate_pos_encoding(self, x, w, h):
+        npatch = x.shape[1] - 1
+        N = self.pos_embed.shape[1] - 1
+        if npatch == N and w == h:
+            return self.pos_embed
+        class_pos_embed = self.pos_embed[:, 0]
+        patch_pos_embed = self.pos_embed[:, 1:]
+        dim = x.shape[-1]
+        w0 = w // self.patch_embed.patch_size
+        h0 = h // self.patch_embed.patch_size
+        # we add a small number to avoid floating point error in the interpolation
+        # see discussion at https://github.com/facebookresearch/dino/issues/8
+        w0, h0 = w0 + 0.1, h0 + 0.1
+        patch_pos_embed = nn.functional.interpolate(
+            patch_pos_embed.reshape(1, int(math.sqrt(N)), int(math.sqrt(N)), dim).permute(0, 3, 1, 2),
+            scale_factor=(w0 / math.sqrt(N), h0 / math.sqrt(N)),
+            mode='bicubic',
+        )
+        assert int(w0) == patch_pos_embed.shape[-2] and int(h0) == patch_pos_embed.shape[-1]
+        patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1).view(1, -1, dim)
+        return torch.cat((class_pos_embed.unsqueeze(0), patch_pos_embed), dim=1)
+
+    def prepare_tokens(self, x):
+        B, nc, w, h = x.shape
+        x = self.patch_embed(x)  # patch linear embedding
+
+        # add the [CLS] token to the embed patch tokens
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+
+        # add positional encoding to each token
+        x = x + self.interpolate_pos_encoding(x, w, h)
+
+        return self.pos_drop(x)
 
     def forward(self, x):
-        if self.gate is not None:
-            x, gate = x
-        out = F.relu(self.bn1(self.conv1(x)))
-        out = F.relu(self.bn2(self.conv2(out)))
-        if self.gate is not None:
-            out = self.gate(out, gate)
-        out = self.bn3(self.conv3(out))
-        out += self.shortcut(x)
-        out = F.relu(out)
-        return out
+        x = self.prepare_tokens(x)
+        
+        # down
+        o1 = self.block1(x)
+        o2 = self.block2(self.down(o1))
+        o3 = self.block3(self.down(o2))
+        o4 = self.block4(self.down(o3))
 
+        # up
+        o5 = self.block5(o4)
+        o6 = self.block6(self.up(o5) + o3)
+        o7 = self.block7(self.up(o6) + o2)
+        o8 = self.block8(self.up(o7) + o1)
 
-class UpResNet(nn.Module):
-    BACKBONES = {
-        "resnet18": (UpBasicBlock, [2, 2, 2, 2]),
-        "resnet34": (UpBasicBlock, [3, 4, 6, 3]),
-        "resnet50": (UpBottleneck, [3, 4, 6, 3]),
-        "resnet101": (UpBottleneck, [3, 4, 23, 3]),
-    }
+        # down
+        o9 = self.block9(o8)
+        o10 = self.block10(self.down(o9) + o7)
+        o11 = self.block11(self.down(o10) + o6)
+        o12 = self.block12(self.down(o11) + o5)
 
-    def __init__(self, type="resnet18", skip=False):
-        super(UpResNet, self).__init__()
-        block, num_blocks = self.BACKBONES[type]
-        self.in_planes = 512
-        self.channels = [int(512 * 0.5 ** f * block.expansion) for f in range(4)]
-
-        block.expansion = 1 / block.expansion
-        self.layer1 = self._make_layer(
-            block, self.channels[0], num_blocks[0], up_factor=2, skip=skip
-        )
-        self.layer2 = self._make_layer(
-            block, self.channels[1], num_blocks[1], up_factor=2, skip=skip
-        )
-        self.layer3 = self._make_layer(
-            block, self.channels[2], num_blocks[2], up_factor=2, skip=skip
-        )
-        self.layer4 = self._make_layer(
-            block, self.channels[3], num_blocks[3], up_factor=2, skip=skip
-        )
-
-    def _make_layer(self, block, planes, num_blocks, up_factor=1, skip=False):
-        up_factors = [up_factor] + [1] * (num_blocks - 1)
-        layers = []
-        for up_factor in up_factors:
-            layers.append(block(self.in_planes, planes, up_factor, skip))
-            self.in_planes = int(planes * block.expansion)
-        return nn.Sequential(*layers)
-
-    def forward(self, x, prev_levels):
-        out1 = self.layer1([x, prev_levels[-1]])
-        out2 = self.layer2([out1, prev_levels[-2]])
-        out3 = self.layer3([out2, prev_levels[-3]])
-        out4 = self.layer4([out3, prev_levels[-4]])
-        return [out1, out2, out3, out4]
-
-
-def init_fpn_weights(module):
-    nn.init.kaiming_uniform_(module.weight, a=1)
-    if module.bias is not None:
-        nn.init.constant_(module.bias, 0)
-
-
-class FPN(nn.Module):
-    def __init__(self, in_dims, out_dim):
-        super(FPN, self).__init__()
-        self.init_conv = nn.Conv2d(in_dims[-1], out_dim, kernel_size=1, stride=1, padding=0)
-
-        self.output1 = nn.Conv2d(out_dim, out_dim, kernel_size=3, stride=1, padding=1)
-        self.output2 = nn.Conv2d(out_dim, out_dim, kernel_size=3, stride=1, padding=1)
-        self.output3 = nn.Conv2d(out_dim, out_dim, kernel_size=3, stride=1, padding=1)
-
-        self.lateral1 = nn.Conv2d(in_dims[-2], out_dim, kernel_size=1, stride=1, padding=0)
-        self.lateral2 = nn.Conv2d(in_dims[-3], out_dim, kernel_size=1, stride=1, padding=0)
-        self.lateral3 = nn.Conv2d(in_dims[-4], out_dim, kernel_size=1, stride=1, padding=0)
-
-        init_fpn_weights(self.output1)
-        init_fpn_weights(self.output2)
-        init_fpn_weights(self.output3)
-        init_fpn_weights(self.lateral1)
-        init_fpn_weights(self.lateral2)
-        init_fpn_weights(self.lateral3)
-
-    def _downsample_add(self, x, y):
-        return F.interpolate(x, scale_factor=0.5, mode="bilinear", align_corners=True) + y
-
-    def forward(self, x):
-        p3 = self._downsample_add(self.init_conv(x[-1]), self.lateral1(x[-2]))
-        p2 = self._downsample_add(p3, self.lateral2(x[-3]))
-        p1 = self._downsample_add(p2, self.lateral3(x[-4]))
-        p3 = self.output1(p3)
-        p2 = self.output2(p2)
-        p1 = self.output3(p1)
-
-        _, _, out_h, out_w = p1.shape
-        out = [p3, p2, p1]
-        out = [
-            F.interpolate(o, size=(out_h, out_w))
-            if (out_w != o.shape[3]) or (out_h != o.shape[2])
-            else o
-            for o in out
-        ]
-        out = torch.cat([out.unsqueeze(-1) for out in out], dim=-1)
-        out = (out * F.softmax(out, dim=-1)).sum(dim=-1)
-        return out
+        g1, g2, g3 = o4[:, 0], o8[:, 0], o12[:, 0]
+        l1, l2, l3 = o4[:, 1:], o8[:, 1:], o12[:, 1:]
+        return l1, g1, l2, g2, l3, g3
 
 
 def proj_init_weights(m):
     if type(m) == nn.Linear:
-        m.weight.data.normal_(mean=0.0, std=0.01)
+        m.weight.data.normal_(mean=0.0, std=0.02)
         m.bias.data.zero_()
-    elif isinstance(m, nn.Conv2d):
-        nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
-
 
 class ProjectionHead(nn.Module):
-    def __init__(self, type, in_dim, out_dim):
+    def __init__(self, in_dim, out_dim):
         super(ProjectionHead, self).__init__()
-        self.type = type
-        if type == "mlp":
-            self.fc = nn.Sequential(
-                nn.Linear(in_dim, in_dim),
-                nn.ReLU(inplace=True),
-                nn.Linear(in_dim, out_dim),
-            )
-        elif type == "dense":
-            self.fc = nn.Sequential(
-                nn.Conv2d(in_dim, in_dim, 1, 1, 0, bias=True),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(in_dim, out_dim, 1, 1, 0, bias=True),
-            )
+        self.fc = nn.Sequential(
+            nn.Linear(in_dim, in_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(in_dim, out_dim),
+        )
         self.apply(proj_init_weights)
 
     def forward(self, x):
         out = self.fc(x)
-        if self.type == "mlp":
-            out = F.normalize(out, p=2, dim=1)
-        else:
-            out = out.view(out.shape[0], out.shape[1], -1)
-            out = F.normalize(out, p=2, dim=1)
+        out = nn.functional.normalize(out, p=2, dim=-1)
         return out
 
-
-class Network(nn.Module):
-    def __init__(self, type="resnet18", skip=False, out_dim=256, proj_dim=256):
-        super().__init__()
-        self.down1 = DownResNet(type)
-        self.down1_mlp = ProjectionHead("mlp", self.down1.channels[-1], proj_dim)
-        self.down1_dense = ProjectionHead("dense", self.down1.channels[-1], proj_dim)
-        self.avg_pool = nn.AdaptiveAvgPool2d((1, 1))
-        self.init_up = nn.Sequential(
-            nn.Linear(self.down1.channels[-1], self.down1.channels[-1]),
-            nn.BatchNorm1d(self.down1.channels[-1]),
-            nn.ReLU(),
-            nn.Linear(self.down1.channels[-1], 16 * self.down1.channels[-1]),
-        )
-
-        self.up1 = UpResNet(type, skip)
-
-        self.down2 = FPN(self.up1.channels, out_dim)
-        self.down2_mlp = ProjectionHead("mlp", out_dim, proj_dim)
-        self.down2_dense = ProjectionHead("dense", out_dim, proj_dim)
+class Unsupervised(nn.Module):
+    def __init__(self, model, proj_dim=256):
+        super(Unsupervised, self).__init__()
+        self.model = model
+        self.g1_fc = ProjectionHead(self.model.embed_dim, proj_dim)
+        self.l1_fc = ProjectionHead(self.model.embed_dim, proj_dim)
+        self.g3_fc = ProjectionHead(self.model.embed_dim, proj_dim)
+        self.l3_fc = ProjectionHead(self.model.embed_dim, proj_dim)
 
     def forward(self, x):
-        outputs = []
-        out = self.down1(x)
-        dense_fv1 = self.down1_dense(out[-1])
-        x = torch.flatten(self.avg_pool(out[-1]), 1)
-        mlp_fv1 = self.down1_mlp(x)
-        outputs.extend(
-            [
-                F.normalize(out[-1].view(out[-1].shape[0], out[-1].shape[1], -1), p=2, dim=1),
-                dense_fv1,
-                mlp_fv1,
-            ]
-        )
+        x1, g1, x2, g2, x3, g3 = self.model(x)
+        g1 = self.g1_fc(g1)
+        g3 = self.g3_fc(g3)
+        l1 = self.l1_fc(x1).permute(0, 2, 1)
+        l3 = self.l3_fc(x3).permute(0, 2, 1)
 
-        x = self.init_up(x).view(x.shape[0], x.shape[1], 4, 4)
-        out = self.up1(x, out)
-        outputs.append(out[-1])
+        x1 = nn.functional.normalize(x1, p=2, dim=1).permute(0, 2, 1)
+        x3 = nn.functional.normalize(x3, p=2, dim=1).permute(0, 2, 1)
 
-        out = self.down2(out)
-        dense_fv2 = self.down2_dense(out)
-        x = torch.flatten(self.avg_pool(out), 1)
-        mlp_fv2 = self.down2_mlp(x)
-        outputs.extend(
-            [F.normalize(out.view(out.shape[0], out.shape[1], -1), p=2, dim=1), dense_fv2, mlp_fv2]
-        )
-
-        return outputs
+        return x1, l1, g1, x2, x3, l3, g3
 
 
 @torch.no_grad()
@@ -339,23 +176,23 @@ class UnsupervisedWrapper(nn.Module):
         self.temp = temp
         self.q_size = q_size
 
-        self.model_q = model
-        self.model_k = copy.deepcopy(self.model_q)
+        self.model_q = Unsupervised(model, proj_dim)
+        self.model_k = deepcopy(self.model_q)
 
         for param_k in self.model_k.parameters():
             param_k.requires_grad = False
 
         q1 = torch.randn(proj_dim, q_size)
-        q1 = F.normalize(q1, p=2, dim=0)
+        q1 = nn.functional.normalize(q1, p=2, dim=0)
 
         q2 = torch.randn(proj_dim, q_size)
-        q2 = F.normalize(q2, p=2, dim=0)
+        q2 = nn.functional.normalize(q2, p=2, dim=0)
 
         q1_dense = torch.randn(proj_dim, q_size)
-        q1_dense = F.normalize(q1_dense, p=2, dim=0)
+        q1_dense = nn.functional.normalize(q1_dense, p=2, dim=0)
 
         q2_dense = torch.randn(proj_dim, q_size)
-        q2_dense = F.normalize(q2_dense, p=2, dim=0)
+        q2_dense = nn.functional.normalize(q2_dense, p=2, dim=0)
 
         self.register_buffer(f"q1", q1)
         self.register_buffer(f"q2", q2)
@@ -493,7 +330,6 @@ class UnsupervisedWrapper(nn.Module):
         logit_mlp2, label_mlp2 = self.compute_mlp_logits(
             mlp_fv2_q, mlp_fv2_k, self.q2.clone().detach()
         )
-
         logit_dense1, label_dense1 = self.compute_dense_logits(
             dense_fv1_q, dense_fv1_k, self.q1_dense.clone().detach()
         )
@@ -526,9 +362,10 @@ class UnsupervisedWrapper(nn.Module):
 
 
 if __name__ == "__main__":
-    a = torch.randn(2, 3, 256, 256).cuda()
-    b = torch.randn(2, 3, 256, 256).cuda()
     net = Network()
     net = UnsupervisedWrapper(net).cuda()
-    out = net(a, b)
+
+    img1 = torch.randn(2, 3, 256, 256).cuda()
+    img2 = torch.randn(2, 3, 256, 256).cuda()
+    out = net(img1, img2)
     print([o.shape for o in out])
