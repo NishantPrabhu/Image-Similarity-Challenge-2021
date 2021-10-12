@@ -111,7 +111,6 @@ class Infer:
 
         model = network.Network(
             type=args.type,
-            in_dim=args.in_dim,
             skip=args.skip,
             out_dim=args.out_dim,
             proj_dim=args.proj_dim,
