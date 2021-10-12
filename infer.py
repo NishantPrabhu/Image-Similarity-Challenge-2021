@@ -2,14 +2,14 @@ import argparse
 import torch
 import random
 import numpy as np
-import utils
+import helpers
 from torchvision import transforms
 import dataset
 from torch.utils.data import DataLoader
 import network
 import os
 import json
-from utils import pbar
+from helpers import pbar
 import faiss
 from argparse import Namespace
 from PIL import Image
@@ -19,19 +19,10 @@ import torch.nn.functional as F
 class InferenceModel(torch.nn.Module):
     def __init__(self, model):
         super(InferenceModel, self).__init__()
-        self.down1 = model.down1
-        self.avg_pool = model.avg_pool
-        self.init_up = model.init_up
-        self.up1 = model.up1
-        self.down2 = model.down2
+        self.model = model.model
 
     def forward(self, x):
-        out = self.down1(x)
-        x = torch.flatten(self.avg_pool(out[-1]), 1)
-        x = self.init_up(x).view(x.shape[0], x.shape[1], 4, 4)
-        out = self.up1(x, out)
-        out = self.down2(out)
-        x = torch.flatten(self.avg_pool(out), 1)
+        _, _, _, _, _, x = self.model(x)
         x = F.normalize(x, p=2, dim=1)
         return x
 
@@ -50,7 +41,7 @@ class Infer:
         torch.cuda.manual_seed(args.seed)
         torch.cuda.manual_seed_all(args.seed)
 
-        self.device, local_rank = utils.setup_device(args.dist)
+        self.device, local_rank = helpers.setup_device(args.dist)
         print(f"Setting up device: {self.device}")
 
         transform = transforms.Compose(
@@ -110,11 +101,7 @@ class Infer:
             )
 
         model = network.Network(
-            type=args.type,
-            in_dim=args.in_dim,
-            skip=args.skip,
-            out_dim=args.out_dim,
-            proj_dim=args.proj_dim,
+            type=args.type
         )
         model = network.UnsupervisedWrapper(
             model=model, proj_dim=args.proj_dim, q_size=args.q_size, m=args.m, temp=args.temp
@@ -129,7 +116,7 @@ class Infer:
         model.load_state_dict(model_dict)
         self.model = InferenceModel(model.model_q).to(self.device)
 
-        self.metric_meter = utils.AvgMeter()
+        self.metric_meter = helpers.AvgMeter()
 
     @torch.no_grad()
     def compute_fvecs(self, name, data_indx=0):
