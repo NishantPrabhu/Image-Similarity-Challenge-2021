@@ -248,30 +248,19 @@ def proj_init_weights(m):
 
 
 class ProjectionHead(nn.Module):
-    def __init__(self, type, in_dim, out_dim):
+    def __init__(self, in_dim, out_dim):
         super(ProjectionHead, self).__init__()
         self.type = type
-        if type == "mlp":
-            self.fc = nn.Sequential(
-                nn.Linear(in_dim, in_dim),
-                nn.ReLU(inplace=True),
-                nn.Linear(in_dim, out_dim),
-            )
-        elif type == "dense":
-            self.fc = nn.Sequential(
-                nn.Conv2d(in_dim, in_dim, 1, 1, 0, bias=True),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(in_dim, out_dim, 1, 1, 0, bias=True),
-            )
+        self.fc = nn.Sequential(
+            nn.Linear(in_dim, in_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(in_dim, out_dim),
+        )
         self.apply(proj_init_weights)
 
     def forward(self, x):
         out = self.fc(x)
-        if self.type == "mlp":
-            out = F.normalize(out, p=2, dim=1)
-        else:
-            out = out.view(out.shape[0], out.shape[1], -1)
-            out = F.normalize(out, p=2, dim=1)
+        out = F.normalize(out, p=2, dim=1)
         return out
 
 
@@ -280,7 +269,6 @@ class Network(nn.Module):
         super().__init__()
         self.down1 = DownResNet(type)
         self.down1_mlp = ProjectionHead("mlp", self.down1.channels[-1], proj_dim)
-        self.down1_dense = ProjectionHead("dense", self.down1.channels[-1], proj_dim)
         self.avg_pool = nn.AdaptiveAvgPool2d((1, 1))
         self.init_up = nn.Sequential(
             nn.Linear(self.down1.channels[-1], self.down1.channels[-1]),
@@ -293,35 +281,20 @@ class Network(nn.Module):
 
         self.down2 = FPN(self.up1.channels, out_dim)
         self.down2_mlp = ProjectionHead("mlp", out_dim, proj_dim)
-        self.down2_dense = ProjectionHead("dense", out_dim, proj_dim)
 
     def forward(self, x):
-        outputs = []
         out = self.down1(x)
-        dense_fv1 = self.down1_dense(out[-1])
         x = torch.flatten(self.avg_pool(out[-1]), 1)
         mlp_fv1 = self.down1_mlp(x)
-        outputs.extend(
-            [
-                F.normalize(out[-1].view(out[-1].shape[0], out[-1].shape[1], -1), p=2, dim=1),
-                dense_fv1,
-                mlp_fv1,
-            ]
-        )
 
         x = self.init_up(x).view(x.shape[0], x.shape[1], 4, 4)
         out = self.up1(x, out)
-        outputs.append(out[-1])
 
         out = self.down2(out)
-        dense_fv2 = self.down2_dense(out)
         x = torch.flatten(self.avg_pool(out), 1)
         mlp_fv2 = self.down2_mlp(x)
-        outputs.extend(
-            [F.normalize(out.view(out.shape[0], out.shape[1], -1), p=2, dim=1), dense_fv2, mlp_fv2]
-        )
 
-        return outputs
+        return mlp_fv1, mlp_fv2
 
 
 @torch.no_grad()
@@ -351,16 +324,8 @@ class UnsupervisedWrapper(nn.Module):
         q2 = torch.randn(proj_dim, q_size)
         q2 = F.normalize(q2, p=2, dim=0)
 
-        q1_dense = torch.randn(proj_dim, q_size)
-        q1_dense = F.normalize(q1_dense, p=2, dim=0)
-
-        q2_dense = torch.randn(proj_dim, q_size)
-        q2_dense = F.normalize(q2_dense, p=2, dim=0)
-
         self.register_buffer(f"q1", q1)
         self.register_buffer(f"q2", q2)
-        self.register_buffer(f"q1_dense", q1_dense)
-        self.register_buffer(f"q2_dense", q2_dense)
         self.register_buffer("q_ptr", torch.zeros(1, dtype=torch.long))
 
     @torch.no_grad()
@@ -388,18 +353,13 @@ class UnsupervisedWrapper(nn.Module):
 
     @torch.no_grad()
     def _batch_unshuffle_ddp(
-        self, x1, dense_fv1, mlp_fv1, rec, x2, dense_fv2, mlp_fv2, indx_unshuffle
+        self, mlp_fv1, mlp_fv2, indx_unshuffle
     ):
-        bs_this = x1.shape[0]
-        x1_g = gather_ddp(x1)
-        dense_fv1_g = gather_ddp(dense_fv1)
+        bs_this = mlp_fv1.shape[0]
         mlp_fv1_g = gather_ddp(mlp_fv1)
-        rec_g = gather_ddp(rec)
-        x2_g = gather_ddp(x2)
-        dense_fv2_g = gather_ddp(dense_fv2)
         mlp_fv2_g = gather_ddp(mlp_fv2)
 
-        bs_all = x1_g.shape[0]
+        bs_all = mlp_fv1_g.shape[0]
 
         n_devices = bs_all // bs_this
 
@@ -407,25 +367,18 @@ class UnsupervisedWrapper(nn.Module):
         indx_this = indx_unshuffle.view(n_devices, -1)[device_indx]
 
         return (
-            x1_g[indx_this],
-            dense_fv1_g[indx_this],
             mlp_fv1_g[indx_this],
-            rec_g[indx_this],
-            x2_g[indx_this],
-            dense_fv2_g[indx_this],
             mlp_fv2_g[indx_this],
         )
 
     @torch.no_grad()
-    def _update_queue(self, keys1, dense_keys1, keys2, dense_keys2):
+    def _update_queue(self, keys1, keys2):
         batch_size = keys1.shape[0]
         ptr = int(self.q_ptr)
         assert self.q_size % batch_size == 0
 
         self.q1[:, ptr : ptr + batch_size] = keys1.T
         self.q2[:, ptr : ptr + batch_size] = keys2.T
-        self.q1_dense[:, ptr : ptr + batch_size] = dense_keys1.T
-        self.q2_dense[:, ptr : ptr + batch_size] = dense_keys2.T
 
         self.q_ptr[0] = ptr
 
@@ -437,55 +390,24 @@ class UnsupervisedWrapper(nn.Module):
         label_mlp = torch.zeros(logit_mlp.shape[0], dtype=torch.long, device=q.device)
         return logit_mlp, label_mlp
 
-    def compute_dense_logits(self, dense_q, dense_k, queue_dense):
-        d_pos = torch.einsum("ncm,ncm->nm", dense_q, dense_k).unsqueeze(1)
-        d_neg = torch.einsum("ncm,ck->nkm", dense_q, queue_dense)
-        logit_dense = torch.cat([d_pos, d_neg], dim=1)
-        logit_dense /= self.temp
-        label_dense = torch.zeros(
-            (logit_dense.shape[0], logit_dense.shape[-1]), dtype=torch.long, device=dense_q.device
-        )
-        return logit_dense, label_dense
-
     def forward(self, img_q, img_k, dist=False):
 
-        x1_q, dense_fv1_q, mlp_fv1_q, rec_q, x2_q, dense_fv2_q, mlp_fv2_q = self.model_q(img_q)
+        mlp_fv1_q, mlp_fv2_q = self.model_q(img_q)
 
         with torch.no_grad():
             self._update_model_k()
             if dist:
                 img_k, indx_unshuffle = self._batch_shuffle_ddp(img_k)
-            x1_k, dense_fv1_k, mlp_fv1_k, rec_k, x2_k, dense_fv2_k, mlp_fv2_k = self.model_k(img_k)
+            mlp_fv1_k, mlp_fv2_k = self.model_k(img_k)
             if dist:
                 (
-                    x1_k,
-                    dense_fv1_k,
                     mlp_fv1_k,
-                    rec_k,
-                    x2_k,
-                    dense_fv2_k,
                     mlp_fv2_k,
                 ) = self._batch_unshuffle_ddp(
-                    x1_k,
-                    dense_fv1_k,
                     mlp_fv1_k,
-                    rec_k,
-                    x2_k,
-                    dense_fv2_k,
                     mlp_fv2_k,
                     indx_unshuffle,
                 )
-            cosine = torch.einsum("nca,ncb->nab", x1_q, x1_k)
-            pos_indx = cosine.argmax(dim=-1)
-            dense_fv1_k = dense_fv1_k.gather(
-                2, pos_indx.unsqueeze(1).expand(-1, dense_fv1_k.shape[1], -1)
-            )
-
-            cosine = torch.einsum("nca,ncb->nab", x2_q, x2_k)
-            pos_indx = cosine.argmax(dim=-1)
-            dense_fv2_k = dense_fv2_k.gather(
-                2, pos_indx.unsqueeze(1).expand(-1, dense_fv2_k.shape[1], -1)
-            )
 
         logit_mlp1, label_mlp1 = self.compute_mlp_logits(
             mlp_fv1_q, mlp_fv1_k, self.q1.clone().detach()
@@ -494,34 +416,16 @@ class UnsupervisedWrapper(nn.Module):
             mlp_fv2_q, mlp_fv2_k, self.q2.clone().detach()
         )
 
-        logit_dense1, label_dense1 = self.compute_dense_logits(
-            dense_fv1_q, dense_fv1_k, self.q1_dense.clone().detach()
-        )
-        logit_dense2, label_dense2 = self.compute_dense_logits(
-            dense_fv2_q, dense_fv2_k, self.q2_dense.clone().detach()
-        )
-
         if dist:
             mlp_fv1_k = gather_ddp(mlp_fv1_k)
             mlp_fv2_k = gather_ddp(mlp_fv2_k)
-            dense_fv1_k = gather_ddp(dense_fv1_k.mean(dim=2))
-            dense_fv2_k = gather_ddp(dense_fv2_k.mean(dim=2))
-        else:
-            dense_fv1_k = dense_fv1_k.mean(dim=2)
-            dense_fv2_k = dense_fv2_k.mean(dim=2)
-        self._update_queue(mlp_fv1_k, dense_fv1_k, mlp_fv2_k, dense_fv2_k)
+        self._update_queue(mlp_fv1_k, mlp_fv2_k)
 
         return (
             logit_mlp1,
             label_mlp1,
             logit_mlp2,
             label_mlp2,
-            logit_dense1,
-            label_dense1,
-            logit_dense2,
-            label_dense2,
-            rec_q,
-            rec_k,
         )
 
 
