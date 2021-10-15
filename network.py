@@ -268,7 +268,7 @@ class Network(nn.Module):
     def __init__(self, type="resnet18", skip=False, out_dim=256, proj_dim=256):
         super().__init__()
         self.down1 = DownResNet(type)
-        self.down1_mlp = ProjectionHead("mlp", self.down1.channels[-1], proj_dim)
+        self.down1_mlp = ProjectionHead(self.down1.channels[-1], proj_dim)
         self.avg_pool = nn.AdaptiveAvgPool2d((1, 1))
         self.init_up = nn.Sequential(
             nn.Linear(self.down1.channels[-1], self.down1.channels[-1]),
@@ -280,7 +280,7 @@ class Network(nn.Module):
         self.up1 = UpResNet(type, skip)
 
         self.down2 = FPN(self.up1.channels, out_dim)
-        self.down2_mlp = ProjectionHead("mlp", out_dim, proj_dim)
+        self.down2_mlp = ProjectionHead(out_dim, proj_dim)
 
     def forward(self, x):
         out = self.down1(x)

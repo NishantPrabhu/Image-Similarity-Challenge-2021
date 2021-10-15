@@ -126,7 +126,7 @@ class Infer:
         if "module" in list(model_dict.keys())[0]:
             model_dict = {key.replace("module.", ""): value for key, value in model_dict.items()}
         model.load_state_dict(model_dict)
-        self.model = InferenceModel(model.model_q).to(self.device)
+        self.model = InferenceModel(model.model_k).to(self.device)
 
         self.metric_meter = utils.AvgMeter()
 
