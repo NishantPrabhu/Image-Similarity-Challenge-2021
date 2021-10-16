@@ -168,15 +168,42 @@ def gather_ddp(t):
     out = torch.cat(t_g, dim=0)
     return out
 
+class Regulariser(nn.Module):
+
+    def __init__(self):
+        super(Regulariser, self).__init__()
+        self.pdist = nn.PairwiseDistance(2)
+    
+    def forward(self, x):
+
+        I = pairwise_NNs_inner(x)
+        distances = self.pdist(x, x[I])
+        loss_uniform = - torch.log(distances).mean()
+        return loss_uniform
+
+
+def pairwise_NNs_inner(x):
+    """
+    Pairwise nearest neighbors for L2-normalized vectors.
+    Uses Torch rather than Faiss to remain on GPU.
+    """
+    # parwise dot products (= inverse distance)
+    dots = torch.mm(x, x.t())
+    n = x.shape[0]
+    dots.view(-1)[::(n+1)].fill_(-1)  # Trick to fill diagonal with -1
+    _, I = torch.max(dots, 1)  # max inner prod -> min distance
+    return I
+
 
 class UnsupervisedWrapper(nn.Module):
-    def __init__(self, model, proj_dim=256, q_size=65536, m=0.999, temp=0.07):
+    def __init__(self, model = 'vits8', proj_dim=256, q_size=65536, m=0.999, temp=0.07, margin = 0.5):
         super(UnsupervisedWrapper, self).__init__()
+        self.margin = margin
         self.m = m
         self.temp = temp
         self.q_size = q_size
 
-        self.model_q = Unsupervised(model, proj_dim)
+        self.model_q = torch.hub.load('facebookresearch/dino:main', 'dino_' + model).cuda()
         self.model_k = deepcopy(self.model_q)
 
         for param_k in self.model_k.parameters():
@@ -195,10 +222,9 @@ class UnsupervisedWrapper(nn.Module):
         q2_dense = nn.functional.normalize(q2_dense, p=2, dim=0)
 
         self.register_buffer(f"q1", q1)
-        self.register_buffer(f"q2", q2)
-        self.register_buffer(f"q1_dense", q1_dense)
-        self.register_buffer(f"q2_dense", q2_dense)
         self.register_buffer("q_ptr", torch.zeros(1, dtype=torch.long))
+
+        self.regulariser = Regulariser()
 
     @torch.no_grad()
     def _update_model_k(self):
@@ -254,16 +280,12 @@ class UnsupervisedWrapper(nn.Module):
         )
 
     @torch.no_grad()
-    def _update_queue(self, keys1, dense_keys1, keys2, dense_keys2):
-        batch_size = keys1.shape[0]
+    def _update_queue(self, keys):
+        batch_size = keys.shape[0]
         ptr = int(self.q_ptr)
         assert self.q_size % batch_size == 0
 
-        self.q1[:, ptr : ptr + batch_size] = keys1.T
-        self.q2[:, ptr : ptr + batch_size] = keys2.T
-        self.q1_dense[:, ptr : ptr + batch_size] = dense_keys1.T
-        self.q2_dense[:, ptr : ptr + batch_size] = dense_keys2.T
-
+        self.q1[:, ptr : ptr + batch_size] = keys.T
         self.q_ptr[0] = ptr
 
     def compute_mlp_logits(self, q, k, queue):
@@ -286,86 +308,67 @@ class UnsupervisedWrapper(nn.Module):
 
     def forward(self, img_q, img_k, dist=False):
 
-        x1_q, dense_fv1_q, mlp_fv1_q, rec_q, x2_q, dense_fv2_q, mlp_fv2_q = self.model_q(img_q)
+        q_global = self.model_q(img_q)
+
+        n = q_global.shape[0]
 
         with torch.no_grad():
             self._update_model_k()
             if dist:
                 img_k, indx_unshuffle = self._batch_shuffle_ddp(img_k)
-            x1_k, dense_fv1_k, mlp_fv1_k, rec_k, x2_k, dense_fv2_k, mlp_fv2_k = self.model_k(img_k)
+            k_global = self.model_k(img_k)
             if dist:
-                (
-                    x1_k,
-                    dense_fv1_k,
-                    mlp_fv1_k,
-                    rec_k,
-                    x2_k,
-                    dense_fv2_k,
-                    mlp_fv2_k,
-                ) = self._batch_unshuffle_ddp(
-                    x1_k,
-                    dense_fv1_k,
-                    mlp_fv1_k,
-                    rec_k,
-                    x2_k,
-                    dense_fv2_k,
-                    mlp_fv2_k,
-                    indx_unshuffle,
+                k_global = self._batch_unshuffle_ddp(
+                    k_global,
+                    indx_unshuffle
                 )
-            cosine = torch.einsum("nca,ncb->nab", x1_q, x1_k)
-            pos_indx = cosine.argmax(dim=-1)
-            dense_fv1_k = dense_fv1_k.gather(
-                2, pos_indx.unsqueeze(1).expand(-1, dense_fv1_k.shape[1], -1)
-            )
+            
+        sim_mat = torch.matmul(q_global, k_global.t())
+        epsilon = 1e-5
 
-            cosine = torch.einsum("nca,ncb->nab", x2_q, x2_k)
-            pos_indx = cosine.argmax(dim=-1)
-            dense_fv2_k = dense_fv2_k.gather(
-                2, pos_indx.unsqueeze(1).expand(-1, dense_fv2_k.shape[1], -1)
-            )
+        loss = list()
 
-        logit_mlp1, label_mlp1 = self.compute_mlp_logits(
-            mlp_fv1_q, mlp_fv1_k, self.q1.clone().detach()
-        )
-        logit_mlp2, label_mlp2 = self.compute_mlp_logits(
-            mlp_fv2_q, mlp_fv2_k, self.q2.clone().detach()
-        )
-        logit_dense1, label_dense1 = self.compute_dense_logits(
-            dense_fv1_q, dense_fv1_k, self.q1_dense.clone().detach()
-        )
-        logit_dense2, label_dense2 = self.compute_dense_logits(
-            dense_fv2_q, dense_fv2_k, self.q2_dense.clone().detach()
-        )
+        neg_count = list()
+
+        for i in range(n):
+
+        
+            
+            pos_pair_ = torch.masked_select(sim_mat[i], sim_mat[i] < 1 - epsilon)
+            
+            neg_pair = torch.masked_select(sim_mat[i], sim_mat[i] > self.margin)
+
+            pos_loss = torch.sum(-pos_pair_ + 1)
+
+            if len(neg_pair) > 0:
+                neg_loss = torch.sum(neg_pair)
+                neg_count.append(len(neg_pair))
+
+            else:
+                neg_loss = 0
+            
+            loss.append(pos_loss + neg_loss)
+
+        loss = sum(loss)/n
 
         if dist:
-            mlp_fv1_k = gather_ddp(mlp_fv1_k)
-            mlp_fv2_k = gather_ddp(mlp_fv2_k)
-            dense_fv1_k = gather_ddp(dense_fv1_k.mean(dim=2))
-            dense_fv2_k = gather_ddp(dense_fv2_k.mean(dim=2))
-        else:
-            dense_fv1_k = dense_fv1_k.mean(dim=2)
-            dense_fv2_k = dense_fv2_k.mean(dim=2)
-        self._update_queue(mlp_fv1_k, dense_fv1_k, mlp_fv2_k, dense_fv2_k)
+            k_global = gather_ddp(k_global)
+            
+        self._update_queue(k_global)
+
+        reg = self.regulariser(q_global)
 
         return (
-            logit_mlp1,
-            label_mlp1,
-            logit_mlp2,
-            label_mlp2,
-            logit_dense1,
-            label_dense1,
-            logit_dense2,
-            label_dense2,
-            rec_q,
-            rec_k,
+            loss, 
+            reg        
         )
 
 
 if __name__ == "__main__":
-    net = Network()
-    net = UnsupervisedWrapper(net).cuda()
+    
+    net = UnsupervisedWrapper().cuda()
 
-    img1 = torch.randn(2, 3, 256, 256).cuda()
-    img2 = torch.randn(2, 3, 256, 256).cuda()
+    img1 = torch.randn(2, 3, 64, 64).cuda()
+    img2 = torch.randn(2, 3, 64, 64).cuda()
     out = net(img1, img2)
     print([o.shape for o in out])

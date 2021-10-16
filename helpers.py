@@ -50,6 +50,9 @@ def add_args(parser):
         "--color_jitter_strength", type=float, default=0.5, help="color jitter strength."
     )
     parser.add_argument(
+        "--margin", type=float, default=0.5, help="margin."
+    )
+    parser.add_argument(
         "--color_jitter_prob", type=float, default=0.8, help="color jitter probability."
     )
     parser.add_argument("--gray_prob", type=float, default=0.2, help="gray probability.")
@@ -67,10 +70,10 @@ def add_args(parser):
         default=128,
         help="projection feature dimension for self supervised learning.",
     )
-    parser.add_argument("--q_size", type=int, default=65536, help="queue size.")
+    parser.add_argument("--q_size", type=int, default=128, help="queue size.")
     parser.add_argument("--m", type=float, default=0.999, help="momentum update.")
     parser.add_argument("--temp", type=float, default=0.04, help="contrastive loss temperature.")
-    parser.add_argument("--lr", type=float, default=5e-4, help="sgd learning rate.")
+    parser.add_argument("--lr", type=float, default=5e-7, help="sgd learning rate.")
     parser.add_argument("--momentum", type=float, default=0.9, help="sgd optimizer momentum.")
     parser.add_argument(
         "--weight_decay", type=float, default=4e-2, help="sgd optimizer weight decay."
@@ -79,8 +82,9 @@ def add_args(parser):
     parser.add_argument("--warmup_epochs", type=int, default=5, help="number of warmup epochs.")
     parser.add_argument("--resume", action="store_true", help="resume training from checkpoint.")
     parser.add_argument(
-        "--loss_weights", type=list, default=[1, 1, 1], help="loss weights (down1, up1, down2)."
+        "--loss_weights", type=list, default=[1, 0.7], help="loss weights (down1, up1, down2)."
     )
+    parser.add_argument("--model", type=str, default = "vits8", help="dataset directory.")
     parser.add_argument(
         "--lr_step_mode",
         type=str,

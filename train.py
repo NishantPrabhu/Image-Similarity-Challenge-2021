@@ -13,6 +13,7 @@ from torch.nn.parallel import DistributedDataParallel
 import wandb
 import json
 from helpers import pbar
+import torch.nn.functional as F
 
 
 class Trainer:
@@ -124,11 +125,9 @@ class Trainer:
             drop_last=True,
         )
 
-        model = network.Network(
-            type=args.type
-        )
+        model = args.model
         self.model = network.UnsupervisedWrapper(
-            model=model, proj_dim=args.proj_dim, q_size=args.q_size, m=args.m, temp=args.temp
+            model=model, proj_dim=args.proj_dim, q_size=args.q_size, m=args.m, temp=args.temp, margin = args.magin
         )
         if args.dist:
             torch.set_num_threads(1)
@@ -154,6 +153,7 @@ class Trainer:
         if args.warmup_epochs > 0:
             for group in self.optim.param_groups:
                 group["lr"] = 1e-12 / args.warmup_epochs * group["lr"]
+
         self.lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(self.optim, total_steps)
         self.cross_entropy = torch.nn.CrossEntropyLoss()
         self.mse_loss = torch.nn.MSELoss()
@@ -209,41 +209,22 @@ class Trainer:
         for (indx, (img_q, img_k)) in enumerate(self.train_loader):
             img_q, img_k = img_q.to(self.device), img_k.to(self.device)
             (
-                logit_mlp1,
-                label_mlp1,
-                logit_mlp2,
-                label_mlp2,
-                logit_dense1,
-                label_dense1,
-                logit_dense2,
-                label_dense2,
-                rec_q,
-                rec_k,
+                sim_loss,
+                reg_loss
+                
             ) = self.model(img_q, img_k, self.args.dist)
 
-            mlp1_loss = self.cross_entropy(logit_mlp1, label_mlp1)
-            mlp2_loss = self.cross_entropy(logit_mlp2, label_mlp2)
-            dense1_loss = self.cross_entropy(logit_dense1, label_dense1)
-            dense2_loss = self.cross_entropy(logit_dense2, label_dense2)
-            rec_loss = self.mse_loss(rec_q, rec_k)
-            down1_loss = (mlp1_loss + dense1_loss) / 2
-            down2_loss = (mlp2_loss + dense2_loss) / 2
-
-            w1, w2, w3 = self.args.loss_weights
-            loss = w1 * down1_loss + w2 * rec_loss + w3 * down2_loss
+    
+            w1, w2 = self.args.loss_weights
+            loss = w1 * sim_loss + w2 * reg_loss
             self.optim.zero_grad()
             loss.backward()
             self.optim.step()
 
             metrics = {
                 "train total loss": loss.item(),
-                "train mlp1 loss": mlp1_loss.item(),
-                "train dense1 loss": dense1_loss.item(),
-                "train down1 loss": down1_loss.item(),
-                "train rec loss": rec_loss.item(),
-                "train mlp2 loss": mlp2_loss.item(),
-                "train dense2 loss": dense2_loss.item(),
-                "train down2 loss": down2_loss.item(),
+                "train mlp1 loss": sim_loss.item(),
+                "train reg loss": reg_loss.item(),
             }
             self.metric_meter.add(metrics)
 
@@ -275,38 +256,22 @@ class Trainer:
         for (indx, (img_q, img_k)) in enumerate(self.val_loader):
             img_q, img_k = img_q.to(self.device), img_k.to(self.device)
             (
-                logit_mlp1,
-                label_mlp1,
-                logit_mlp2,
-                label_mlp2,
-                logit_dense1,
-                label_dense1,
-                logit_dense2,
-                label_dense2,
-                rec_q,
-                rec_k,
+                sim_loss,
+                reg_loss
+                
             ) = self.model(img_q, img_k, self.args.dist)
 
-            mlp1_loss = self.cross_entropy(logit_mlp1, label_mlp1)
-            mlp2_loss = self.cross_entropy(logit_mlp2, label_mlp2)
-            dense1_loss = self.cross_entropy(logit_dense1, label_dense1)
-            dense2_loss = self.cross_entropy(logit_dense2, label_dense2)
-            rec_loss = self.mse_loss(rec_q, rec_k)
-            down1_loss = (mlp1_loss + dense1_loss) / 2
-            down2_loss = (mlp2_loss + dense2_loss) / 2
-
-            w1, w2, w3 = self.args.loss_weights
-            loss = w1 * down1_loss + w2 * rec_loss + w3 * down2_loss
+    
+            w1, w2 = self.args.loss_weights
+            loss = w1 * sim_loss + w2 * reg_loss
+            self.optim.zero_grad()
+            loss.backward()
+            self.optim.step()
 
             metrics = {
-                "val total loss": loss.item(),
-                "val mlp1 loss": mlp1_loss.item(),
-                "val dense1 loss": dense1_loss.item(),
-                "val down1 loss": down1_loss.item(),
-                "val rec loss": rec_loss.item(),
-                "val mlp2 loss": mlp2_loss.item(),
-                "val dense2 loss": dense2_loss.item(),
-                "val down2 loss": down2_loss.item(),
+                "train total loss": loss.item(),
+                "train mlp1 loss": sim_loss.item(),
+                "train reg loss": reg_loss.item(),
             }
             self.metric_meter.add(metrics)
 
