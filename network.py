@@ -51,21 +51,6 @@ class UnsupervisedWrapper(nn.Module):
         for param_k in self.model_k.parameters():
             param_k.requires_grad = False
 
-        q1 = torch.randn(proj_dim, q_size)
-        q1 = nn.functional.normalize(q1, p=2, dim=0)
-
-        q2 = torch.randn(proj_dim, q_size)
-        q2 = nn.functional.normalize(q2, p=2, dim=0)
-
-        q1_dense = torch.randn(proj_dim, q_size)
-        q1_dense = nn.functional.normalize(q1_dense, p=2, dim=0)
-
-        q2_dense = torch.randn(proj_dim, q_size)
-        q2_dense = nn.functional.normalize(q2_dense, p=2, dim=0)
-
-        self.register_buffer(f"q1", q1)
-        self.register_buffer("q_ptr", torch.zeros(1, dtype=torch.long))
-
         self.regulariser = Regulariser()
 
     @torch.no_grad()
