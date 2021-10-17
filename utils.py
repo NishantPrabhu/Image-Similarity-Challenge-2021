@@ -656,13 +656,15 @@ class MultiCropWrapper(nn.Module):
     concatenated features.
     """
 
-    def __init__(self, backbone, head1, head2, head3):
+    # def __init__(self, backbone, head1, head2, head3):
+    def __init__(self, backbone, head):
         super(MultiCropWrapper, self).__init__()
         # disable layers dedicated to ImageNet labels classification
         self.backbone = backbone
-        self.head1 = head1
-        self.head2 = head2
-        self.head3 = head3
+        self.head = head
+        # self.head1 = head1
+        # self.head2 = head2
+        # self.head3 = head3
 
     def forward(self, x):
         # convert to list
@@ -675,16 +677,20 @@ class MultiCropWrapper(nn.Module):
             )[1],
             0,
         )
-        start_idx, output1, output2, output3 = 0, torch.empty(0).to(x[0].device), torch.empty(0).to(x[0].device), torch.empty(0).to(x[0].device)
+        start_idx, output = 0, torch.empty(0).to(x[0].device)
+        # start_idx, output1, output2, output3 = 0, torch.empty(0).to(x[0].device), torch.empty(0).to(x[0].device), torch.empty(0).to(x[0].device)
         for end_idx in idx_crops:
-            _out1, _out2, _out3 = self.backbone(torch.cat(x[start_idx:end_idx]))
+            # _out1, _out2, _out3 = self.backbone(torch.cat(x[start_idx:end_idx]))
+            _out = self.backbone(torch.cat(x[start_idx:end_idx]))
             # accumulate outputs
-            output1 = torch.cat((output1, _out1))
-            output2 = torch.cat((output2, _out2))
-            output3 = torch.cat((output3, _out3))
+            output = torch.cat((output, _out))
+            # output1 = torch.cat((output1, _out1))
+            # output2 = torch.cat((output2, _out2))
+            # output3 = torch.cat((output3, _out3))
             start_idx = end_idx
         # Run the head forward on the concatenated features.
-        return self.head1(output1), self.head2(output2), self.head3(output3)
+        # return self.head1(output1), self.head2(output2), self.head3(output3)
+        return self.head(output)
 
 
 def get_params_groups(model):

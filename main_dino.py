@@ -33,6 +33,16 @@ from torchvision import models as torchvision_models
 import utils
 import vision_transformer as vits
 from vision_transformer import DINOHead
+import imgaug.augmenters as iaa
+import imgaug as ia
+from augly.image import (
+    MemeFormat,
+    OverlayOntoScreenshot,
+    OverlayStripes,
+    OverlayText,
+    RandomEmojiOverlay,
+)
+import random
 
 torchvision_archs = sorted(
     name
@@ -67,7 +77,7 @@ def get_args_parser():
     )
     parser.add_argument(
         "--out_dim",
-        default=65536,
+        default=8192,
         type=int,
         help="""Dimensionality of
         the DINO head output. For complex and large datasets large values (like 65k) work well.""",
@@ -82,7 +92,7 @@ def get_args_parser():
     )
     parser.add_argument(
         "--momentum_teacher",
-        default=0.996,
+        default=0.9996,
         type=float,
         help="""Base EMA
         parameter for teacher update. The value is increased to 1 during training with cosine schedule.
@@ -113,7 +123,7 @@ def get_args_parser():
     )
     parser.add_argument(
         "--warmup_teacher_temp_epochs",
-        default=30,
+        default=5,
         type=int,
         help="Number of warmup epochs for the teacher temperature (Default: 30).",
     )
@@ -157,7 +167,7 @@ def get_args_parser():
         type=int,
         help="Per-GPU batch-size : number of distinct images loaded on one GPU.",
     )
-    parser.add_argument("--epochs", default=800, type=int, help="Number of epochs of training.")
+    parser.add_argument("--epochs", default=50, type=int, help="Number of epochs of training.")
     parser.add_argument(
         "--freeze_last_layer",
         default=1,
@@ -176,7 +186,7 @@ def get_args_parser():
     )
     parser.add_argument(
         "--warmup_epochs",
-        default=10,
+        default=2,
         type=int,
         help="Number of epochs for the linear learning-rate warm up.",
     )
@@ -201,7 +211,7 @@ def get_args_parser():
         "--global_crops_scale",
         type=float,
         nargs="+",
-        default=(0.4, 1.0),
+        default=(0.14, 1.0),
         help="""Scale range of the cropped image before resizing, relatively to the origin image.
         Used for large global view cropping. When disabling multi-crop (--local_crops_number 0), we
         recommand using a wider range of scale ("--global_crops_scale 0.14 1." for example)""",
@@ -209,7 +219,7 @@ def get_args_parser():
     parser.add_argument(
         "--local_crops_number",
         type=int,
-        default=10,
+        default=0,
         help="""Number of small
         local views to generate. Set this parameter to 0 to disable multi-crop training.
         When disabling multi-crop we recommend to use "--global_crops_scale 0.14 1." """,
@@ -234,7 +244,7 @@ def get_args_parser():
         "--output_dir", default=".", type=str, help="Path to save logs and checkpoints."
     )
     parser.add_argument(
-        "--saveckp_freq", default=20, type=int, help="Save checkpoint every x epochs."
+        "--saveckp_freq", default=1, type=int, help="Save checkpoint every x epochs."
     )
     parser.add_argument("--seed", default=0, type=int, help="Random seed.")
     parser.add_argument(
@@ -283,11 +293,13 @@ def train_dino(args):
     args.arch = args.arch.replace("deit", "vit")
     # if the network is a Vision Transformer (i.e. vit_tiny, vit_small, vit_base)
     if args.arch in vits.__dict__.keys():
+        pretrained = torch.load("vits8.ckpt")
         student = vits.__dict__[args.arch](
             patch_size=args.patch_size,
             drop_path_rate=args.drop_path_rate,  # stochastic depth
+            pretrained=pretrained,
         )
-        teacher = vits.__dict__[args.arch](patch_size=args.patch_size)
+        teacher = vits.__dict__[args.arch](patch_size=args.patch_size, pretrained=pretrained)
         embed_dim = student.embed_dim
     # if the network is a XCiT
     elif args.arch in torch.hub.list("facebookresearch/xcit:main"):
@@ -316,24 +328,24 @@ def train_dino(args):
             use_bn=args.use_bn_in_head,
             norm_last_layer=args.norm_last_layer,
         ),
-        DINOHead(
-            embed_dim,
-            args.out_dim,
-            use_bn=args.use_bn_in_head,
-            norm_last_layer=args.norm_last_layer,
-        ),
-        DINOHead(
-            embed_dim,
-            args.out_dim,
-            use_bn=args.use_bn_in_head,
-            norm_last_layer=args.norm_last_layer,
-        ),
+        # DINOHead(
+        #     embed_dim,
+        #     args.out_dim,
+        #     use_bn=args.use_bn_in_head,
+        #     norm_last_layer=args.norm_last_layer,
+        # ),
+        # DINOHead(
+        #     embed_dim,
+        #     args.out_dim,
+        #     use_bn=args.use_bn_in_head,
+        #     norm_last_layer=args.norm_last_layer,
+        # ),
     )
     teacher = utils.MultiCropWrapper(
         teacher,
         DINOHead(embed_dim, args.out_dim, args.use_bn_in_head),
-        DINOHead(embed_dim, args.out_dim, args.use_bn_in_head),
-        DINOHead(embed_dim, args.out_dim, args.use_bn_in_head),
+        # DINOHead(embed_dim, args.out_dim, args.use_bn_in_head),
+        # DINOHead(embed_dim, args.out_dim, args.use_bn_in_head),
     )
     # move networks to gpu
     student, teacher = student.cuda(), teacher.cuda()
@@ -488,14 +500,20 @@ def train_one_epoch(
         images = [im.cuda(non_blocking=True) for im in images]
         # teacher and student forward passes + compute dino loss
         with torch.cuda.amp.autocast(fp16_scaler is not None):
-            teacher_output1, teacher_output2, teacher_output3 = teacher(
+            # teacher_output1, teacher_output2, teacher_output3 = teacher(
+            #     images[:2]
+            # )  # only the 2 global views pass through the teacher
+            # student_output1, student_output2, student_output3 = student(images)
+            # loss1 = dino_loss(student_output1, teacher_output1, epoch)
+            # loss2 = dino_loss(student_output2, teacher_output2, epoch)
+            # loss3 = dino_loss(student_output3, teacher_output3, epoch)
+            # loss = (loss1 + loss2 + loss3)/3
+
+            teacher_output = teacher(
                 images[:2]
             )  # only the 2 global views pass through the teacher
-            student_output1, student_output2, student_output3 = student(images)
-            loss1 = dino_loss(student_output1, teacher_output1, epoch)
-            loss2 = dino_loss(student_output2, teacher_output2, epoch)
-            loss3 = dino_loss(student_output3, teacher_output3, epoch)
-            loss = (loss1 + loss2 + loss3)/3
+            student_output = student(images)
+            loss = dino_loss(student_output, teacher_output, epoch)
 
         if not math.isfinite(loss.item()):
             print("Loss is {}, stopping training".format(loss.item()), force=True)
@@ -607,8 +625,139 @@ class DINOLoss(nn.Module):
         )
 
 
+class AuglyTransforms:
+    def __init__(self):
+        self.policies = [
+            MemeFormat(),
+            OverlayOntoScreenshot(),
+            OverlayStripes(),
+            OverlayText(),
+            RandomEmojiOverlay(),
+        ]
+
+    def __call__(self, img):
+        aug = random.choice(self.policies)
+        img = aug(img)
+        img = Image.fromarray(np.array(img)[:, :, 0:3])
+        return img
+
+
+sometimes = lambda aug: iaa.Sometimes(0.5, aug)
+CustomAugment = iaa.Sequential(
+    [
+        # apply the following augmenters to most images
+        iaa.Fliplr(0.5),  # horizontally flip 50% of all images
+        iaa.Flipud(0.2),  # vertically flip 20% of all images
+        # crop images by -5% to 10% of their height/width
+        sometimes(iaa.CropAndPad(percent=(-0.05, 0.1), pad_mode=ia.ALL, pad_cval=(0, 255))),
+        sometimes(
+            iaa.Affine(
+                scale={
+                    "x": (0.8, 1.2),
+                    "y": (0.8, 1.2),
+                },  # scale images to 80-120% of their size, individually per axis
+                translate_percent={
+                    "x": (-0.2, 0.2),
+                    "y": (-0.2, 0.2),
+                },  # translate by -20 to +20 percent (per axis)
+                rotate=(-45, 45),  # rotate by -45 to +45 degrees
+                shear=(-16, 16),  # shear by -16 to +16 degrees
+                order=[0, 1],  # use nearest neighbour or bilinear interpolation (fast)
+                cval=(0, 255),  # if mode is constant, use a cval between 0 and 255
+                mode=ia.ALL,  # use any of scikit-image's warping modes (see 2nd image from the top for examples)
+            )
+        ),
+        # execute 0 to 5 of the following (less important) augmenters per image
+        # don't execute all of them, as that would often be way too strong
+        iaa.SomeOf(
+            (0, 5),
+            [
+                sometimes(
+                    iaa.Superpixels(p_replace=(0, 1.0), n_segments=(20, 200))
+                ),  # convert images into their superpixel representation
+                iaa.OneOf(
+                    [
+                        iaa.GaussianBlur((0, 3.0)),  # blur images with a sigma between 0 and 3.0
+                        iaa.AverageBlur(
+                            k=(2, 7)
+                        ),  # blur image using local means with kernel sizes between 2 and 7
+                        iaa.MedianBlur(
+                            k=(3, 11)
+                        ),  # blur image using local medians with kernel sizes between 2 and 7
+                    ]
+                ),
+                iaa.Sharpen(alpha=(0, 1.0), lightness=(0.75, 1.5)),  # sharpen images
+                iaa.Emboss(alpha=(0, 1.0), strength=(0, 2.0)),  # emboss images
+                # search either for all edges or for directed edges,
+                # blend the result with the original image using a blobby mask
+                iaa.SimplexNoiseAlpha(
+                    iaa.OneOf(
+                        [
+                            iaa.EdgeDetect(alpha=(0.5, 1.0)),
+                            iaa.DirectedEdgeDetect(alpha=(0.5, 1.0), direction=(0.0, 1.0)),
+                        ]
+                    )
+                ),
+                iaa.AdditiveGaussianNoise(
+                    loc=0, scale=(0.0, 0.05 * 255), per_channel=0.5
+                ),  # add gaussian noise to images
+                iaa.OneOf(
+                    [
+                        iaa.Dropout(
+                            (0.01, 0.1), per_channel=0.5
+                        ),  # randomly remove up to 10% of the pixels
+                        iaa.CoarseDropout(
+                            (0.03, 0.15), size_percent=(0.02, 0.05), per_channel=0.2
+                        ),
+                    ]
+                ),
+                iaa.Invert(0.05, per_channel=True),  # invert color channels
+                iaa.Add(
+                    (-10, 10), per_channel=0.5
+                ),  # change brightness of images (by -10 to 10 of original value)
+                iaa.AddToHueAndSaturation((-20, 20)),  # change hue and saturation
+                # either change the brightness of the whole image (sometimes
+                # per channel) or change the brightness of subareas
+                iaa.OneOf(
+                    [
+                        iaa.Multiply((0.5, 1.5), per_channel=0.5),
+                        iaa.FrequencyNoiseAlpha(
+                            exponent=(-4, 0),
+                            first=iaa.Multiply((0.5, 1.5), per_channel=True),
+                            second=iaa.LinearContrast((0.5, 2.0)),
+                        ),
+                    ]
+                ),
+                iaa.LinearContrast((0.5, 2.0), per_channel=0.5),  # improve or worsen the contrast
+                iaa.Grayscale(alpha=(0.0, 1.0)),
+                sometimes(
+                    iaa.ElasticTransformation(alpha=(0.5, 3.5), sigma=0.25)
+                ),  # move pixels locally around (with random strengths)
+                sometimes(
+                    iaa.PiecewiseAffine(scale=(0.01, 0.05))
+                ),  # sometimes move parts of the image around
+                sometimes(iaa.PerspectiveTransform(scale=(0.01, 0.1))),
+            ],
+            random_order=True,
+        ),
+    ],
+    random_order=True,
+)
+
+
+class ToNumpy:
+    def __call__(self, img):
+        return np.array(img)
+
 class DataAugmentationDINO(object):
     def __init__(self, global_crops_scale, local_crops_scale, local_crops_number):
+        complex_augs = transforms.Compose([
+            transforms.RandomApply([AuglyTransforms()], p=0.1),
+            transforms.Resize((224, 224)),
+            ToNumpy(),
+            CustomAugment.augment_image,
+            transforms.ToPILImage(),
+        ])
         flip_and_color_jitter = transforms.Compose(
             [
                 transforms.RandomHorizontalFlip(p=0.5),
@@ -633,23 +782,26 @@ class DataAugmentationDINO(object):
         # first global crop
         self.global_transfo1 = transforms.Compose(
             [
-                transforms.RandomResizedCrop(
-                    224, scale=global_crops_scale, interpolation=Image.BICUBIC
-                ),
-                flip_and_color_jitter,
-                utils.GaussianBlur(1.0),
+                
+                # transforms.RandomResizedCrop(
+                #     224, scale=global_crops_scale, interpolation=Image.BICUBIC
+                # ),
+                # flip_and_color_jitter,
+                # utils.GaussianBlur(1.0),
+                complex_augs,
                 normalize,
             ]
         )
         # second global crop
         self.global_transfo2 = transforms.Compose(
             [
-                transforms.RandomResizedCrop(
-                    224, scale=global_crops_scale, interpolation=Image.BICUBIC
-                ),
-                flip_and_color_jitter,
-                utils.GaussianBlur(0.1),
-                utils.Solarization(0.2),
+                # transforms.RandomResizedCrop(
+                #     224, scale=global_crops_scale, interpolation=Image.BICUBIC
+                # ),
+                # flip_and_color_jitter,
+                # utils.GaussianBlur(0.1),
+                # utils.Solarization(0.2),
+                complex_augs,
                 normalize,
             ]
         )

@@ -22,6 +22,7 @@ import torch
 import torch.nn as nn
 
 from utils import trunc_normal_
+import copy
 
 
 def drop_path(x, drop_prob: float = 0.0, training: bool = False):
@@ -113,9 +114,11 @@ class Block(nn.Module):
         drop_path=0.0,
         act_layer=nn.GELU,
         norm_layer=nn.LayerNorm,
+        pretrained=None
     ):
         super().__init__()
         self.norm1 = norm_layer(dim)
+        self.norm1.load_state_dict(pretrained.norm1.state_dict())
         self.attn = Attention(
             dim,
             num_heads=num_heads,
@@ -124,12 +127,23 @@ class Block(nn.Module):
             attn_drop=attn_drop,
             proj_drop=drop,
         )
-        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        qkv_weights = pretrained.attn.qkv.state_dict()
+        w, b = qkv_weights["weight"], qkv_weights["bias"]
+        self.attn.q.load_state_dict({"weight": w[0:w.shape[0]//3], "bias": b[0:b.shape[0]//3]})
+        self.attn.k.load_state_dict({"weight": w[w.shape[0]//3:(2*w.shape[0])//3], "bias": b[w.shape[0]//3:2*b.shape[0]//3]})
+        self.attn.v.load_state_dict({"weight": w[(2*w.shape[0])//3:w.shape[0]], "bias": b[(2*w.shape[0])//3:b.shape[0]]})
+        self.attn.attn_drop.load_state_dict(pretrained.attn.attn_drop.state_dict())
+        self.attn.proj.load_state_dict(pretrained.attn.proj.state_dict())
+        self.attn.proj_drop.load_state_dict(pretrained.attn.proj_drop.state_dict())
+        # self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        self.drop_path = pretrained.drop_path
         self.norm2 = norm_layer(dim)
+        self.norm2.load_state_dict(pretrained.norm2.state_dict())
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(
             in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop
         )
+        self.mlp.load_state_dict(pretrained.mlp.state_dict())
 
     def forward(self, x, y=None, return_attention=False):
         y = x if y is None else y
@@ -192,6 +206,7 @@ class VITDown(nn.Module):
         attn_drop_rate=0.0,
         drop_path_rate=0.0,
         norm_layer=nn.LayerNorm,
+        pretrained=None,
         **kwargs
     ):
         super(VITDown, self).__init__()
@@ -210,6 +225,7 @@ class VITDown(nn.Module):
                     attn_drop=attn_drop_rate,
                     drop_path=dpr[i],
                     norm_layer=norm_layer,
+                    pretrained=pretrained[i]
                 )
                 for i in range(depth)
             ]
@@ -243,6 +259,7 @@ class VITUp(nn.Module):
         attn_drop_rate=0.0,
         drop_path_rate=0.0,
         norm_layer=nn.LayerNorm,
+        pretrained=None,
         **kwargs
     ):
         super(VITUp, self).__init__()
@@ -261,6 +278,7 @@ class VITUp(nn.Module):
                     attn_drop=attn_drop_rate,
                     drop_path=dpr[i],
                     norm_layer=norm_layer,
+                    pretrained=pretrained[i]
                 )
                 for i in range(depth)
             ]
@@ -300,19 +318,25 @@ class VisionTransformer(nn.Module):
         attn_drop_rate=0.0,
         drop_path_rate=0.0,
         norm_layer=nn.LayerNorm,
+        pretrained=None,
         **kwargs
     ):
         super().__init__()
         self.num_features = self.embed_dim = embed_dim
-
+        
         self.patch_embed = PatchEmbed(
             img_size=img_size[0], patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim
         )
+        self.patch_embed.load_state_dict(pretrained.patch_embed.state_dict())
         num_patches = self.patch_embed.num_patches
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))
+        self.cls_token.data = pretrained.cls_token.data
+        self.pos_embed.data = pretrained.pos_embed.data
+        
         self.pos_drop = nn.Dropout(p=drop_rate)
+        self.pos_drop.load_state_dict(pretrained.pos_drop.state_dict())
 
         self.down1 = VITDown(
             embed_dim=embed_dim,
@@ -325,6 +349,7 @@ class VisionTransformer(nn.Module):
             attn_drop_rate=attn_drop_rate,
             drop_path_rate=drop_path_rate,
             norm_layer=norm_layer,
+            pretrained=pretrained.blocks
         )
         self.up = VITUp(
             embed_dim=embed_dim,
@@ -337,6 +362,7 @@ class VisionTransformer(nn.Module):
             attn_drop_rate=attn_drop_rate,
             drop_path_rate=drop_path_rate,
             norm_layer=norm_layer,
+            pretrained=pretrained.blocks
         )
         self.down2 = VITDown(
             embed_dim=embed_dim,
@@ -349,14 +375,21 @@ class VisionTransformer(nn.Module):
             attn_drop_rate=attn_drop_rate,
             drop_path_rate=drop_path_rate,
             norm_layer=norm_layer,
+            pretrained=pretrained.blocks
         )
-        self.norm1 = norm_layer(embed_dim)
-        self.norm2 = norm_layer(embed_dim)
-        self.norm3 = norm_layer(embed_dim)
+        self.norm = norm_layer(embed_dim)
+        self.norm.load_state_dict(pretrained.norm.state_dict())
+        
+        # self.norm1 = norm_layer(embed_dim)
+        # self.norm2 = norm_layer(embed_dim)
+        # self.norm3 = norm_layer(embed_dim)
+        # self.norm1.load_state_dict(pretrained.norm.state_dict())
+        # self.norm2.load_state_dict(pretrained.norm.state_dict())
+        # self.norm3.load_state_dict(pretrained.norm.state_dict())
 
-        trunc_normal_(self.pos_embed, std=0.02)
-        trunc_normal_(self.cls_token, std=0.02)
-        self.apply(self._init_weights)
+        # trunc_normal_(self.pos_embed, std=0.02)
+        # trunc_normal_(self.cls_token, std=0.02)
+        # self.apply(self._init_weights)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -410,9 +443,11 @@ class VisionTransformer(nn.Module):
         out1 = self.down1(x)
         out2 = self.up(out1[-1], out1[:-1])
         out3 = self.down2(out2[-1], out2[:-1])
-
-        x1, x2, x3 = self.norm1(out1[-1]), self.norm2(out2[-1]), self.norm3(out3[-1])
-        return x1[:, 0], x2[:, 0], x3[:, 0]
+        
+        x = self.norm(out3[-1])
+        return x[:, 0]
+        # x1, x2, x3 = self.norm1(out1[-1]), self.norm2(out2[-1]), self.norm3(out3[-1])
+        # return x1[:, 0], x2[:, 0], x3[:, 0]
 
     def get_last_selfattention(self, x):
         x = self.prepare_tokens(x)
@@ -520,3 +555,6 @@ class DINOHead(nn.Module):
         x = nn.functional.normalize(x, dim=-1, p=2)
         x = self.last_layer(x)
         return x
+
+if __name__ == "__main__":
+    vit = vit_small(patch_size=8)
